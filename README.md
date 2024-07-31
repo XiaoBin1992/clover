@@ -1,4 +1,4 @@
-<img src="figs/logo.png" alt="EAGLE" width="50" align="left"><div align="center"><h1>&nbsp;Clover: Regressive Lightweight Speculative Decoding</h1></div>
+<img src="figs/logo.png" alt="EAGLE" width="8%" align="left"><div align="center"><h1>&nbsp;Clover: Regressive Lightweight Speculative Decoding</h1></div>
 
 <!-- <h1 align="center">
   Clover: Regressive Lightweight Speculative Decoding
