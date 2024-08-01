@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 s = 0
 e = 68000 - 1
 
-gpus=[[0],[1],[2],[3]]
+gpus=[[0,1,2,3]]
 num_p = len(gpus)
 outdir = '{}/sharegpt_{}_{}_mufp16'.format(args.outdir,s,e)
 

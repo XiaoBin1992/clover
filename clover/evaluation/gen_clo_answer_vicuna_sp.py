@@ -71,7 +71,7 @@ def ea_forward(input_ids, model, tokenizer, tree_choices, logits_processor=None,
     input_len = input_ids.shape[1]
     reset_tree_mode(model)
     tree_logits, logits, hidden_state, sample_token = initialize_tree(
-        input_ids, model, tree_buffers["tree_attn_mask"], past_key_values, logits_processor, topk_sample = False
+        input_ids, model, tree_buffers["tree_attn_mask"], past_key_values, logits_processor
     )
     new_token = 0
     for idx in range(max_steps):
@@ -109,8 +109,7 @@ def ea_forward(input_ids, model, tokenizer, tree_choices, logits_processor=None,
             model,
             hidden_state,
             hidden_state_new,
-            sample_p,
-            topk_sample = False
+            sample_p
         )
         if tokenizer.eos_token_id in input_ids[0, input_len:].tolist():
             break

@@ -20,6 +20,7 @@
 """ PyTorch LLaMA model."""
 import copy
 import os
+#os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 import math
 import numpy as np
 from typing import List, Optional, Tuple, Union
@@ -30,7 +31,7 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
-from transformers import AutoModelForCausalLM, AutoConfig
+from transformers import AutoModelForCausalLM
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast, SequenceClassifierOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
@@ -55,23 +56,7 @@ try:
     from .utils import generate_beam_tree_buffers
 except:
     from utils import generate_beam_tree_buffers
-    
-def print_tensor(name, tensor):
-    variance = tensor.to(torch.float32).pow(2).mean(-1, keepdim=True)
-    print(f"print_tensor {name}: {tensor.size()} {tensor.dtype} {torch.isnan(tensor).any()} {torch.max(tensor)} {torch.min(tensor)} variance:{variance.size()} {torch.min(variance)}")# {tensor} 
-    
 
-def print_param(name, param):
-    from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
-
-    if is_deepspeed_zero3_enabled():
-        from deepspeed.runtime.zero import GatheredParameters
-
-        with GatheredParameters(param, modifier_rank=0):
-            print(f"Gathered print_param {name}: {param.size()} {torch.isnan(param).any()} {torch.max(param)} {torch.min(param)}")
-    else:
-        print(f"print_param {name}: {param.size()} {torch.isnan(param).any()} {torch.max(param)} {torch.min(param)}")
-            
 # Copied from transformers.models.bart.modeling_bart._make_causal_mask
 def _make_causal_mask(
     input_ids_shape: torch.Size, dtype: torch.dtype, device: torch.device, past_key_values_length: int = 0
@@ -129,7 +114,7 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
-
+    
 class LlamaRotaryEmbedding(torch.nn.Module):
     def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
         super().__init__()
@@ -283,11 +268,8 @@ class LlamaAttention(nn.Module):
 
         else:
             query_states = self.q_proj(hidden_states)
-            # print_tensor(f"att query_states", query_states)
             key_states = self.k_proj(hidden_states)
-            # print_tensor(f"att key_states", key_states)
             value_states = self.v_proj(hidden_states)
-            # print_tensor(f"att value_states", value_states)
 
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -348,7 +330,6 @@ class LlamaAttention(nn.Module):
         if not output_attentions:
             attn_weights = None
 
-        # print_tensor(f"att attn_output", attn_output)
         return attn_output, attn_weights, past_key_value
 
 
@@ -439,8 +420,6 @@ class LlamaDecoderLayer(nn.Module):
 
         if self.index != 0:
             hidden_states = self.input_layernorm(hidden_states)
-            # print_param("decode layer input_layernorm", self.input_layernorm.weight)
-            # print_tensor(f"decode layer input_layernorm hidden_states", hidden_states)
 
         # Self Attention
         hidden_states, self_attn_weights, present_key_value = self.self_attn(
@@ -451,15 +430,12 @@ class LlamaDecoderLayer(nn.Module):
             output_attentions=output_attentions,
             use_cache=use_cache,
         )
-        # print_tensor(f"decode layer self_attn hidden_states", hidden_states)
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        # print_tensor(f"decode layer post_attention_layernorm hidden_states", hidden_states)
         hidden_states = self.mlp(hidden_states)
-        # print_tensor(f"decode layer mlp hidden_states", hidden_states)
         hidden_states = residual + hidden_states
 
         outputs = (hidden_states,)
@@ -504,24 +480,6 @@ class ResBlock(nn.Module):
         """
         return x + self.act(self.linear(x))
 
-@torch.compile
-def cosine_similarity(t1, t2, dim=-1, eps=1e-8):
-    # get normalization value
-    t1_div = torch.linalg.vector_norm(t1, dim=dim, keepdims=True)
-    t2_div = torch.linalg.vector_norm(t2, dim=dim, keepdims=True)
-
-    t1_div = t1_div.clone()
-    t2_div = t2_div.clone()
-    with torch.no_grad():
-        t1_div.clamp_(math.sqrt(eps))
-        t2_div.clamp_(math.sqrt(eps))
-
-    # normalize, avoiding division by 0
-    t1_norm = t1 / t1_div
-    t2_norm = t2 / t2_div
-
-    return (t1_norm * t2_norm).sum(dim=dim)
-
 class ResAttentionBlock(nn.Module):
     """
     A Residual Block module.
@@ -541,9 +499,12 @@ class ResAttentionBlock(nn.Module):
 
         self.input_layernorm = LlamaRMSNorm(hidden_size, rms_norm_eps)
         self.q = nn.Linear(hidden_size, hidden_size)
+        nn.init.normal_(self.q.weight, mean=0.0, std=0.01)
         self.k = nn.Linear(hidden_size, hidden_size)
+        nn.init.normal_(self.k.weight, mean=0.0, std=0.01)
         self.v = nn.Linear(hidden_size, hidden_size)
-        self.rms_norm_eps = rms_norm_eps
+        # Initialize as an identity mapping
+        nn.init.zeros_(self.v.weight)
 
     def forward(self, x, y, x_replica=None):
         res = x
@@ -552,12 +513,12 @@ class ResAttentionBlock(nn.Module):
         if x_replica is not None:
             x_q = x_q.view(-1, self.head_size * self.head_dim)[x_replica]
         y_k = self.k(y)
-        att = torch.nn.functional.cosine_similarity(x_q.view(-1, self.head_dim), y_k.view(-1, self.head_dim), eps=self.rms_norm_eps)
+        att = torch.nn.functional.cosine_similarity(x_q.view(-1, self.head_dim), y_k.view(-1, self.head_dim))
         att = att.view(-1, self.head_size, 1)
         v =  self.v(y).view(-1, self.head_size, self.head_dim)
         v = v * att
         v = v.view(x_q.size())
-        return res + v
+        return res + v 
 
 class I(nn.Module):
     def __init__(self):
@@ -569,7 +530,8 @@ class I(nn.Module):
 def len_list(x,n):
     return [i for i in x if len(i)<=n]
 
-    
+import torch.cuda.nvtx as nvtx
+
 class Clover2Model(nn.Module):
     '''
     output: [logits_1 (seq_len-1,向后两位), logits_2 (seq_len-2), logits_3 (seq_len-3)] , main_logits
@@ -587,57 +549,48 @@ class Clover2Model(nn.Module):
         for param in self.lm_head.parameters():
             param.requires_grad = False
 
-        def load_tensor(path, name, vocab_truncate=False):
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
+        if load_emb:
             from safetensors import safe_open
             import json
             try:
                 with open(os.path.join(path,"model.safetensors.index.json"),"r") as f:
                     index_json=json.loads(f.read())
-                    #print(f"index_json:{index_json} {name}")
-                    emb_path=index_json["weight_map"][name]
-                    #print(f"emb_path:{emb_path} {name}")
+                    emb_path=index_json["weight_map"]["model.embed_tokens.weight"]
                 with safe_open(os.path.join(path,emb_path),
                                 framework="pt",
                                 device="cpu") as f:
-                    tensor_slice = f.get_slice(name)
-                    if vocab_truncate:
-                        vocab_size, hidden_dim = tensor_slice.get_shape()
-                        tensor = tensor_slice[:, :hidden_dim]
-                    else:
-                        tensor = tensor_slice[:]
+                    tensor_slice = f.get_slice("model.embed_tokens.weight")
+                    vocab_size, hidden_dim = tensor_slice.get_shape()
+                    tensor = tensor_slice[:, :hidden_dim].float()
             except:
                 with open(os.path.join(path, "pytorch_model.bin.index.json"), "r") as f:
                     index_json = json.loads(f.read())
-                    emb_path = index_json["weight_map"][name]
+                    emb_path = index_json["weight_map"]["model.embed_tokens.weight"]
                 weights=torch.load(os.path.join(path,emb_path))
-                tensor=weights[name]
-            return tensor#.cuda()
-                
+                tensor=weights["model.embed_tokens.weight"].float()
+            self.embed_tokens.weight.data = tensor
+        
+        for param in self.embed_tokens.parameters():
+            param.requires_grad = False
         
         self.clover_embed_tokens = nn.Embedding(
-                config.vocab_size, config.hidden_size, config.pad_token_id#, dtype=config.torch_dtype
+                config.vocab_size, config.hidden_size, config.pad_token_id
             )
         for param in self.clover_embed_tokens.parameters():
             param.requires_grad = False
-            
-        #self.init_tree()
-        self.layers = nn.ModuleList([ LlamaDecoderLayer(config,1+i) for i in range(self.config_medusa.num_layers)])
-
-        # base_model = AutoModelForCausalLM.from_pretrained(path).model
-        baseconfig = AutoConfig.from_pretrained(path)
-        base_layer = LlamaDecoderLayer(config,1)
-        self.init_with_data("base_layer.self_attn.q_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.self_attn.q_proj.weight"), base_layer.self_attn.q_proj.weight)
-        self.init_with_data("base_layer.self_attn.k_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.self_attn.k_proj.weight"), base_layer.self_attn.k_proj.weight)
-        self.init_with_data("base_layer.self_attn.v_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.self_attn.v_proj.weight"), base_layer.self_attn.v_proj.weight)
-        self.init_with_data("base_layer.self_attn.o_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.self_attn.o_proj.weight"), base_layer.self_attn.o_proj.weight)
-        self.init_with_data("base_layer.mlp.gate_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.mlp.gate_proj.weight"), base_layer.mlp.gate_proj.weight)
-        self.init_with_data("base_layer.mlp.down_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.mlp.down_proj.weight"), base_layer.mlp.down_proj.weight)
-        self.init_with_data("base_layer.mlp.up_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.mlp.up_proj.weight"), base_layer.mlp.up_proj.weight)
-        self.init_with_data("base_layer.input_layernorm", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.input_layernorm.weight"), base_layer.input_layernorm.weight)
-        self.init_with_data("base_layer.post_attention_layernorm", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.post_attention_layernorm.weight"), base_layer.post_attention_layernorm.weight)
         
-        base_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.init_with_data("base_norm", load_tensor(path, f"model.norm.weight"), base_norm.weight)
+        #self.init_tree()
+
+        self.layer = LlamaDecoderLayer(config,1)
+        self.layer2 = None
+        if self.config_medusa.num_layers > 1:
+            self.layer2 = LlamaDecoderLayer(config,2)
+            self.layers = nn.ModuleList([self.layer, self.layer2])
+        else:
+            self.layers = nn.ModuleList([self.layer])
+
+        base_model = AutoModelForCausalLM.from_pretrained(path).model
         
         self.clover_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         
@@ -667,16 +620,14 @@ class Clover2Model(nn.Module):
         )
         
         
-        self._init_medusa_head(base_layer, base_norm)#base_model.layers[-1], base_model.norm
+        self._init_medusa_head(base_model.layers[-1], base_model.norm)
         
-        # del base_model
-        del base_layer
-        del base_norm
+        del base_model
         torch.cuda.empty_cache()
 
     def init_tree(self):
         self.tree = mc_sim_7b_63
-        self.tree_buffer=generate_tree_buffers(self.tree,self.clover_embed_tokens.weight.device)
+        self.tree_buffer=generate_tree_buffers(self.tree,self.embed_tokens.weight.device)
 
     def reset(self):
         self.tree_mask=None
@@ -787,8 +738,9 @@ class Clover2Model(nn.Module):
                 base_layer.post_attention_layernorm.weight,
                 clover_layer.post_attention_layernorm.weight,
             )
-        for idx, layer in enumerate(self.layers):
-            init_clover_layer(idx, base_layer, layer)
+        init_clover_layer(0, base_layer, self.layer)
+        if self.layer2 is not None:
+            init_clover_layer(1, base_layer, self.layer2)
 
         self.init_one_param(
             f"clover_norm", base_norm.weight, self.clover_norm.weight
@@ -835,6 +787,17 @@ class Clover2Model(nn.Module):
                 clover_head_mlp_rnn.v.bias,
                 nn.init.zeros_,
             )
+            # self.init_with_method(
+            #     f"clover_head_mlp_rnn_o",
+            #     clover_head_mlp_rnn.o.weight,
+            #     nn.init.uniform_,
+            #     b=0.01
+            # )
+            # self.init_with_method(
+            #     f"clover_head_mlp_rnn_o_bias",
+            #     clover_head_mlp_rnn.o.bias,
+            #     nn.init.zeros_,
+            # )
         init_clover_rnn(self.clover_head_mlp_rnn)
         init_clover_rnn(self.clover_head_mlp_rnn2)
         
@@ -906,52 +869,16 @@ class Clover2Model(nn.Module):
 
     @classmethod
     def init_one_param(cls, name, base, to, fn=None):
-        from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
-
-        if is_deepspeed_zero3_enabled():
-            from deepspeed.runtime.zero import GatheredParameters
-
-            with GatheredParameters(base, modifier_rank=None):
-                with GatheredParameters(to, modifier_rank=0):
-                    if fn is None:
-                        to.data[:] = base.data[:].to(to.data.dtype)
-                    else:
-                        # print(f"init weight {name} {base.size()} {new_base.size()}")
-                        to.data[:] = fn(base).data[:].to(to.data.dtype)
-                    print(f"Gathered init weight {name} {to.data}")
+        if fn is None:
+            to.data[:] = base.data[:]
         else:
-            if fn is None:
-                to.data[:] = base.data[:].to(to.data.dtype)
-            else:
-                to.data[:] = fn(base).data[:].to(to.data.dtype)
-            print(f"init weight {name} {to.data}")
+            to.data[:] = fn(base).data[:]
+        print(f"init weight {name} {to.data} {to.size()}")
 
-    @classmethod
-    def init_with_data(cls, name, data, to, fn=None):
-        from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
-
-        if is_deepspeed_zero3_enabled():
-            from deepspeed.runtime.zero import GatheredParameters
-            with GatheredParameters(to, modifier_rank=0):
-                to.data[:] = data.to(to.dtype)
-                print(f"Gathered init weight {name} {data.dtype} {to.data}")
-        else:
-            to.data[:] = data.to(to.dtype)
-            print(f"init weight {name} {to.data}")
-            
     @classmethod
     def init_with_method(cls, name, to, method, **kwargs):
-        from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
-
-        if is_deepspeed_zero3_enabled():
-            from deepspeed.runtime.zero import GatheredParameters
-
-            with GatheredParameters(to, modifier_rank=0):
-                method(to.data, **kwargs)
-                print(f"Gathered init weight {name} {to.data}")
-        else:
-            method(to.data, **kwargs)
-            print(f"init weight {name} {to.data}")
+        method(to.data, **kwargs)
+        print(f"init weight {name} {to.data} {to.size()}")
 
     @classmethod
     def eye_with_uniform(cls, tensor, b):
@@ -1016,6 +943,7 @@ class Clover2Model(nn.Module):
             hidden_states_seq = get_all_head(medusa_hidden_states, token_emb)
         
         return hidden_states_seq
+    
     
     def forward_lm_head(self, lm_head_h):
         return self.lm_head(lm_head_h)
@@ -1148,7 +1076,7 @@ class Clover2Model(nn.Module):
             hidden_states, token_emb, next_decoder_cache = all_ret
         else:
             hidden_states, token_emb = all_ret
-
+            
         if use_cache:
             return hidden_states, next_decoder_cache
 
@@ -1156,6 +1084,7 @@ class Clover2Model(nn.Module):
 
     def forward_rnn(self, hidden_states, input_ids, head_idx, token_emb=None):
         if head_idx > 0:
+            # token_emb = self.embed_tokens(input_ids)
             if token_emb is None:
                 token_emb = self.clover_embed_tokens(input_ids)
             hidden_states = self.clover_head_mlp_rnn2(
@@ -1193,6 +1122,8 @@ class Clover2Model(nn.Module):
         if new_hidden:
             return torch.cat(new_hidden, dim=1)
         else:
+            # Handle case when all elements in repeat_num are 0
+            # Returning an empty tensor with the appropriate dimensions
             return torch.zeros((hidden_state.size(0), 0, hidden_state.size(2)), device=hidden_state.device)
 
     @torch.no_grad()
@@ -1204,6 +1135,8 @@ class Clover2Model(nn.Module):
         if new_hidden:
             return torch.cat(new_hidden, dim=2)
         else:
+            # Handle case when all elements in repeat_num are 0
+            # Returning an empty tensor with the appropriate dimensions
             return torch.zeros((hidden_state.size(0), 0, hidden_state.size(2)), device=hidden_state.device)
         
     
@@ -1255,6 +1188,7 @@ class Clover2Model(nn.Module):
         if use_cache:
 
             if hasattr(self, "stable_kv") and self.stable_kv is not None:
+                # kv_len=self.stable_kv[0][0].shape[2]
                 out_hidden, past_key_values = self.forward_layer(hidden_states, past_key_values=self.stable_kv,use_cache=True)
             else:
                 out_hidden, past_key_values = self.forward_layer(hidden_states, use_cache=True)
@@ -1333,18 +1267,21 @@ class Clover2Model(nn.Module):
                     token_left -= len(position_ids_list[i])
                 # gen attn_mask
                 if i == 0:
-                    attn_mask.append(torch.eye(sum(repeat_nums[i]), sum(repeat_nums[i]), device=self.clover_embed_tokens.weight.device).unsqueeze(0).unsqueeze(0))
+                    attn_mask.append(torch.eye(sum(repeat_nums[i]), sum(repeat_nums[i]), device=self.embed_tokens.weight.device).unsqueeze(0).unsqueeze(0))
                 else:
                     attn_mask.append(torch.cat([self.repeat_hidden_dim2(attn_mask[i-1],repeat_nums[i]),
-                                               torch.eye(sum(repeat_nums[i]), sum(repeat_nums[i]), device=self.clover_embed_tokens.weight.device).unsqueeze(0).unsqueeze(0)], dim=-1))
+                                               torch.eye(sum(repeat_nums[i]), sum(repeat_nums[i]), device=self.embed_tokens.weight.device).unsqueeze(0).unsqueeze(0)], dim=-1))
                 
                 
                 topk_index = topk_index.view(-1)
                 select_index=topk_index[tree_indices[i]]
+                # print(select_index)
+                #len_sq=select_index.shape[0]
                 input_ids=select_index[None,:]
                 hidden_states=self.repeat_hidden(out_head, repeat_nums[i])
 
                 out_hidden, out_head = self.forward_rnn(hidden_states, input_ids=input_ids, head_idx=i+1)
+                # print('i: ', i, ' ', out_hidden.shape)
                 if not self.diff_device:
                     last_headout = head(out_hidden[0])
                 else:
@@ -1388,7 +1325,6 @@ class Clover2Model(nn.Module):
                             sort_prob[i].append(topk_prob[seq_len][k].cpu().item())
                             mc_sim_t[i].append([k])
                         else:
-                            # sort_prob_ = self.repeat_hidden_list(sort_prob[i-1],repeat_nums[i])
                             sort_prob[i].append(topk_prob[seq_len][k].cpu().item()*sort_prob[i-1][seq_len])
                             mc_sim_t[i].append(mc_sim_t[i-1][seq_len]+[k])
                 
@@ -1404,6 +1340,7 @@ class Clover2Model(nn.Module):
                     tree_buffer = generate_beam_tree_buffers(mc_sim_list, device=self.clover_head_mlp_rnn.q.weight.device, topk=token_count)
                     tree_buffer["retrieve_indices_head"] = tree_buffer["retrieve_indices"].to(
                                 self.clover_head_mlp_rnn.q.weight.device)
+                
             else:
                 pass
         else:
@@ -1420,6 +1357,7 @@ class Clover2Model(nn.Module):
         self.reset()
         if use_cache:
 
+            # with Timer("draft many"):
             if hasattr(self, "stable_kv") and self.stable_kv is not None:
                 out_hidden, past_key_values = self.forward_layer(hidden_states, input_ids[:, -hidden_states.shape[1]:], past_key_values=self.stable_kv,use_cache=True)
             else:
@@ -1439,22 +1377,26 @@ class Clover2Model(nn.Module):
                     last_headout = F.linear(out_hidden[0], self.lm_head.weight)
 
             for i in range(len(self.tree_buffer['tree_indices'])):
-                if logits_processor is not None:
-                    topk_index,topk_prob,op=self.sample(last_headout,logits_processor,k=top_k,)
-                else:
-                    top=torch.topk(last_headout, top_k, dim=-1)
-                    topk_index,topk_prob = top.indices,top.values
-                    topk_prob = nn.functional.softmax(topk_prob, dim=-1)
-                    op=None
+                with nvtx.range("Forward Pass"):
+                    # sample update ss_token, ss_prob, ss_op
+                    if logits_processor is not None:
+                        topk_index,topk_prob,op=self.sample(last_headout,logits_processor,k=top_k,)
+                    else:
+                        top=torch.topk(last_headout, top_k, dim=-1)
+                        topk_index,topk_prob = top.indices,top.values
+                        topk_prob = nn.functional.softmax(topk_prob, dim=-1)
+                        op=None
 
-                ss_token.append(topk_index)
-                ss_prob.append(topk_prob)
-                ss_op.append(op)
-                topk_index = topk_index.view(-1)
-                select_index=topk_index[self.tree_buffer['tree_indices'][i]]
-                input_ids=select_index[None,:]
-                hidden_states=self.repeat_hidden(out_head, self.tree_buffer["repeat_nums"][i])
-
+                    ss_token.append(topk_index)
+                    ss_prob.append(topk_prob)
+                    ss_op.append(op)
+                    
+                    topk_index = topk_index.view(-1)
+                    select_index=topk_index[self.tree_buffer['tree_indices'][i]]
+                    input_ids=select_index[None,:]
+                    hidden_states=self.repeat_hidden(out_head, self.tree_buffer["repeat_nums"][i])
+                
+                # with Timer("draft one"):
                 out_hidden, out_head = self.forward_rnn(hidden_states, input_ids=input_ids, head_idx=i+1)
                 if not self.diff_device:
                     last_headout = head(out_hidden[0])
@@ -1479,9 +1421,10 @@ class Clover2Model(nn.Module):
         else:
             # TODO
             pass
-
+        
         return (torch.cat(ss_token),torch.cat(ss_prob),ss_op)
-    
+
+
 
 class Vhead(nn.Module):
     def __init__(self,ins=6566,outs=32000):
@@ -1489,6 +1432,8 @@ class Vhead(nn.Module):
         self.fc = nn.Linear(ins,outs,bias=False)
     def forward(self,x):
         return self.fc(x)
+
+
 
 import torch
 
