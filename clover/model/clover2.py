@@ -604,14 +604,14 @@ class Clover2Model(nn.Module):
                         vocab_size, hidden_dim = tensor_slice.get_shape()
                         tensor = tensor_slice[:, :hidden_dim]
                     else:
-                        return tensor_slice[:]
+                        tensor = tensor_slice[:]
             except:
                 with open(os.path.join(path, "pytorch_model.bin.index.json"), "r") as f:
                     index_json = json.loads(f.read())
                     emb_path = index_json["weight_map"][name]
                 weights=torch.load(os.path.join(path,emb_path))
                 tensor=weights[name]
-            return tensor
+            return tensor#.cuda()
                 
         
         self.clover_embed_tokens = nn.Embedding(
@@ -621,15 +621,8 @@ class Clover2Model(nn.Module):
             param.requires_grad = False
             
         #self.init_tree()
-        self.layer = LlamaDecoderLayer(config,1)
-        self.layer2_loop = False
-        self.layer2 = None
-        if self.config_medusa.num_layers > 1:
-            if self.layer2_loop:
-                self.layer2 = None
-            else:
-                self.layer2 = LlamaDecoderLayer(config,2)
-            
+        self.layers = nn.ModuleList([ LlamaDecoderLayer(config,1+i) for i in range(self.config_medusa.num_layers)])
+
         # base_model = AutoModelForCausalLM.from_pretrained(path).model
         baseconfig = AutoConfig.from_pretrained(path)
         base_layer = LlamaDecoderLayer(config,1)
@@ -794,9 +787,8 @@ class Clover2Model(nn.Module):
                 base_layer.post_attention_layernorm.weight,
                 clover_layer.post_attention_layernorm.weight,
             )
-        init_clover_layer(0, base_layer, self.layer)
-        if self.layer2 is not None:
-            init_clover_layer(1, base_layer, self.layer2)
+        for idx, layer in enumerate(self.layers):
+            init_clover_layer(idx, base_layer, layer)
 
         self.init_one_param(
             f"clover_norm", base_norm.weight, self.clover_norm.weight
@@ -1081,59 +1073,33 @@ class Clover2Model(nn.Module):
         
         next_decoder_cache = () if use_cache else None
 
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
-        # main_logits = self.lm_head(hidden_states)
-        if self.gradient_checkpointing and self.training:
-            assert output_hidden_states is not True
-            assert use_cache is not True
-            past_key_value = None
-            def create_custom_forward(module):
-                def custom_forward(*inputs):
-                    # None for past_key_value
-                    return module(*inputs, attention_mask, 
-                                  position_ids, past_key_value, output_attentions)
-                def custom_forward2(hidden_states):
-                    # None for past_key_value
-                    hidden_states = module(hidden_states, attention_mask, 
-                                  position_ids, past_key_value, output_attentions)
-                    if self.layer2_loop:
-                        hidden_states = module(hidden_states[0], attention_mask, 
-                                    position_ids, past_key_value, output_attentions)
-                    return hidden_states
-                return custom_forward2
 
-            medusa_hidden_states = torch.utils.checkpoint.checkpoint(
-                create_custom_forward(self.layer),
-                hidden_states,
-            )
-            if self.layer2 is not None:
-                medusa_hidden_states = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(self.layer2),
-                    medusa_hidden_states[0],
-                ) 
-        else:
-            past_key_value = past_key_values[0] if past_key_values is not None else None
-            medusa_hidden_states = self.layer(
-                hidden_states,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                past_key_value=past_key_value,
-                output_attentions=output_attentions,
-                use_cache=use_cache,
-            )
+        for layer_idx, cur_layer in enumerate(self.layers):
+            past_key_value = past_key_values[layer_idx] if past_key_values is not None else None
             if output_hidden_states:
-                all_hidden_states += (medusa_hidden_states,)
-            if use_cache:
-                next_decoder_cache += (medusa_hidden_states[2 if output_attentions else 1],)
-            if self.layer2 is not None or self.layer2_loop:
-                if self.layer2_loop:
-                    cur_layer = self.layer
-                else:
-                    cur_layer = self.layer2
-                past_key_value = past_key_values[1] if past_key_values is not None else None
+                all_hidden_states += (hidden_states,)
+            # main_logits = self.lm_head(hidden_states)
+            if self.gradient_checkpointing and self.training:
+                def create_custom_forward(module):
+                    def custom_forward(*inputs):
+                        # None for past_key_value
+                        return module(*inputs, attention_mask, 
+                                    position_ids, past_key_value, output_attentions)
+                    return custom_forward
+
+                medusa_hidden_states = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(cur_layer),
+                    hidden_states,
+                )
+                if output_hidden_states:
+                    all_hidden_states += (medusa_hidden_states,)
+                if use_cache:
+                    next_decoder_cache += (medusa_hidden_states[2 if output_attentions else 1],)
+                
+                # print_tensor(f"forward_clover_h layer medusa_hidden_states", medusa_hidden_states[0])
+            else:
                 medusa_hidden_states = cur_layer(
-                    medusa_hidden_states[0],
+                    hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     past_key_value=past_key_value,
@@ -1144,7 +1110,7 @@ class Clover2Model(nn.Module):
                     all_hidden_states += (medusa_hidden_states,)
                 if use_cache:
                     next_decoder_cache += (medusa_hidden_states[2 if output_attentions else 1],)
-        hidden_states = medusa_hidden_states[0]
+            hidden_states = medusa_hidden_states[0]
         hidden_states = self.clover_norm(hidden_states)
         if use_cache:
             return hidden_states, token_emb, next_decoder_cache
