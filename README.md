@@ -64,12 +64,16 @@ pip install -e .
 You can run the following command to generate the training data.
 
 ```bash
-python -m clover.ge_data.allocation --outdir [path of data]
+CUDA_VISIBLE_DEVICES=4,5  python -m clover.ge_data.allocation --python_name [python script like ge_data_all_vicuna_nonnorm.py/ge_data_all_llama3Ins.py] --model_path [model path] --outdir [path of data] --dataset [ShareGPT_Vicuna_unfiltered/ShareGPT_V4.3_unfiltered_cleaned_split.json] --gpus 0,1  > info.log 2>&1 &
 ```
 
 ### Train and Evaluation Inference
 
-*clover/stripts* provides examples of .sh files.
+clover/stripts* provides examples of .sh files.
+
+Get indicator data:
+clover/clover/evaluation/speed_spe.py
+clover/clover/evaluation/tau_spe.py
 
 ### Reference
 For technical details and full experimental results, please check [the paper of Clover](https://arxiv.org/abs/2405.00263) and [the paper of Clover-2](https://arxiv.org/abs/2408.00264).

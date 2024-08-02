@@ -2,16 +2,21 @@ import argparse
 import copy
 
 parser = argparse.ArgumentParser(description='sp')
+parser.add_argument('--python_name', type=str, default='ge_data_all_vicuna_nonnorm.py')
+parser.add_argument('--model_path', type=str, default='0')
 parser.add_argument('--outdir', type=str, default='0')
+parser.add_argument('--gpus', type=str, default='0,1,2,3')
+parser.add_argument('--dataset', type=str, default="ShareGPT_Vicuna_unfiltered/ShareGPT_V4.3_unfiltered_cleaned_split.json")
 args = parser.parse_args()
-
+print(args)
 import os
 from concurrent.futures import ThreadPoolExecutor
 
 s = 0
 e = 68000 - 1
 
-gpus=[[0,1,2,3]]
+gpus=[list(map(int, args.gpus.split(",")))]#
+print(gpus)
 num_p = len(gpus)
 outdir = '{}/sharegpt_{}_{}_mufp16'.format(args.outdir,s,e)
 
@@ -50,8 +55,8 @@ for i in range(num_p):
     end = data_a[i][1]
     gpu_index = gpus[i]
     gpu_index_str = ' '.join(map(str, gpu_index))
-    command = "python ge_data_all_vicuna_nonnorm.py --start={} --end={} --index={} --gpu_index {} --outdir {}".format(start, end, index,
-                                                                                                gpu_index_str, outdir)
+    command = "python clover/ge_data/{} --start={} --end={} --index={} --gpu_index {} --outdir {} --path {} --dataset {}".format(args.python_name, start, end, index,
+                                                                                                gpu_index_str, outdir, args.model_path, args.dataset)
     commands.append(command)
 
 with ThreadPoolExecutor(max_workers=len(commands)) as executor:
