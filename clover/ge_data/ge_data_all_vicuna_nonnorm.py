@@ -1373,8 +1373,8 @@ def build_dataset_rank(
         tokenizer, split="train",
         select=None,
 ):
-    ds = load_dataset('json', data_files="/cpfs01/user/xiaobin/glj/datasets/ShareGPT_Vicuna_unfiltered/ShareGPT_V4.3_unfiltered_cleaned_split.json")
-    # ds = load_dataset('json', data_files="/cpfs01/user/xiaobin/glj/datasets/Spe_eval_merge/Eval_data_split.json")
+    ds = load_dataset('json', data_files="datasets/ShareGPT_Vicuna_unfiltered/ShareGPT_V4.3_unfiltered_cleaned_split.json")
+    # ds = load_dataset('json', data_files="datasets/Spe_eval_merge/Eval_data_split.json")
     
     ds = ds['train']
     ds = ds.shuffle(seed=42)
