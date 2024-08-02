@@ -1,4 +1,4 @@
-<img src="figs/logo.png" alt="EAGLE" width="8%" align="left"><div align="center"><h1>&nbsp;Clover: Regressive Lightweight Speculative Decoding</h1></div>
+<img src="figs/logo.png" alt="Clover" width="8%" align="left"><div align="center"><h1>&nbsp;Clover: Regressive Lightweight Speculative Decoding</h1></div>
 
 <!-- <h1 align="center">
   Clover: Regressive Lightweight Speculative Decoding
@@ -6,7 +6,7 @@
 
 <p align="center">
 | <a href="https://arxiv.org/abs/2405.00263"><b>Clover Paper</b></a>
-| <a href="https://arxiv.org/abs/2405.00263"><b>Clover-2 Paper</b></a> |
+| <a href="https://arxiv.org/abs/2408.00264"><b>Clover-2 Paper</b></a> |
 </p>
 
 ---
@@ -72,7 +72,7 @@ python -m clover.ge_data.allocation --outdir [path of data]
 *clover/stripts* provides examples of .sh files.
 
 ### Reference
-For technical details and full experimental results, please check [the paper of Clover](https://arxiv.org/abs/2405.00263) and [the paper of Clover-2](https://arxiv.org/abs/2405.00263).
+For technical details and full experimental results, please check [the paper of Clover](https://arxiv.org/abs/2405.00263) and [the paper of Clover-2](https://arxiv.org/abs/2408.00264).
 <!-- ```
 
 ``` -->
