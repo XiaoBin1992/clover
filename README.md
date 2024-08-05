@@ -1,4 +1,4 @@
-<img src="figs/logo.png" alt="Clover" width="8%" align="left"><div align="center"><h1>&nbsp;Clover: Regressive Lightweight Speculative Decoding</h1></div>
+<img src="figs/logo.png" alt="Clover" width="8%" align="left"><div align="center"><h1> Clover: Regressive Lightweight Speculative Decoding</h1></div>
 
 <!-- <h1 align="center">
   Clover: Regressive Lightweight Speculative Decoding
@@ -61,7 +61,14 @@ pip install -e .
 
 ### Generate Train Data
 
-You can run the following command to generate the training data.
+You can run the following command to generate .json files for the evaluation data, using Vicuna 7B as an example.
+
+```bash
+sh scripts/7b/test_speed_base.sh
+python ge_data/merge_eval_data.py
+```
+
+Then, you can run the following command to generate the training data from .json files.
 
 ```bash
 python -m clover.ge_data.allocation --outdir [path of data]
@@ -72,7 +79,9 @@ python -m clover.ge_data.allocation --outdir [path of data]
 *clover/stripts* provides examples of .sh files.
 
 ### Reference
+
 For technical details and full experimental results, please check [the paper of Clover](https://arxiv.org/abs/2405.00263) and [the paper of Clover-2](https://arxiv.org/abs/2408.00264).
+
 <!-- ```
 
 ``` -->
