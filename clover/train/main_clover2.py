@@ -204,6 +204,12 @@ def list_files(path):
             datapath.append(file_path)
     return datapath
 
+def copy_and_rename_file(src_path, dest_dir):  
+    os.makedirs(dest_dir, exist_ok=True)  
+    dest_path = os.path.join(dest_dir, 'config.json')  
+    shutil.copy(src_path, dest_path)  
+    print(f"Copied and renamed file to {dest_path}")  
+
 
 class AddGaussianNoise:
     def __init__(self, mean=0.0, std=0.0):
@@ -902,6 +908,7 @@ for epoch in range(args.start_epoch, num_epochs + 1):
             wandb.log({f"test/epochloss": epoch_loss_test})
             if not ENABLE_DEEPSPEED and not TEST_MODE:
                 accelerator.save_state(output_dir=f"{args.cpdir}/epoch_{epoch + 1}")
+                copy_and_rename_file(args.configpath, f"{args.cpdir}/epoch_{epoch + 1}")  
                 subdirs = [d for d in os.listdir(args.cpdir) if os.path.isdir(os.path.join(args.cpdir, d))]  
                 subdirs = sorted(subdirs, key=lambda d: os.path.getmtime(os.path.join(args.cpdir, d)))  
                 
