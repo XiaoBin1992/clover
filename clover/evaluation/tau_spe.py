@@ -57,10 +57,10 @@ def process_jsonl(file_path):
 
 def main():
     parser = argparse.ArgumentParser(description="Process a .jsonl file to find the ratio of total cc_num to total ct_num.")
-    parser.add_argument('file_path', type=str, help='The path to the .jsonl file')
+    parser.add_argument('--path', type=str, help='The path to the .jsonl file')
 
     args = parser.parse_args()
-    file_path = args.file_path
+    file_path = args.path
 
     result1, cc1, ct1, result2, cc2, ct2, result3, cc3, ct3, result4, cc4, ct4, result5, cc5, ct5, result6, cc6, ct6, = process_jsonl(file_path)
     

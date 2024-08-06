@@ -20,7 +20,6 @@
 """ PyTorch LLaMA model."""
 import copy
 import os
-#os.environ["CUDA_VISIBLE_DEVICES"] = "5"
 import math
 import numpy as np
 from typing import List, Optional, Tuple, Union
@@ -31,7 +30,7 @@ import torch.utils.checkpoint
 from torch import nn
 from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoConfig
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast, SequenceClassifierOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
@@ -56,7 +55,23 @@ try:
     from .utils import generate_beam_tree_buffers
 except:
     from utils import generate_beam_tree_buffers
+    
+def print_tensor(name, tensor):
+    variance = tensor.to(torch.float32).pow(2).mean(-1, keepdim=True)
+    print(f"print_tensor {name}: {tensor.size()} {tensor.dtype} {torch.isnan(tensor).any()} {torch.max(tensor)} {torch.min(tensor)} variance:{variance.size()} {torch.min(variance)}")# {tensor} 
+    
 
+def print_param(name, param):
+    from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
+
+    if is_deepspeed_zero3_enabled():
+        from deepspeed.runtime.zero import GatheredParameters
+
+        with GatheredParameters(param, modifier_rank=0):
+            print(f"Gathered print_param {name}: {param.size()} {torch.isnan(param).any()} {torch.max(param)} {torch.min(param)}")
+    else:
+        print(f"print_param {name}: {param.size()} {torch.isnan(param).any()} {torch.max(param)} {torch.min(param)}")
+            
 # Copied from transformers.models.bart.modeling_bart._make_causal_mask
 def _make_causal_mask(
     input_ids_shape: torch.Size, dtype: torch.dtype, device: torch.device, past_key_values_length: int = 0
@@ -114,7 +129,7 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
-    
+
 class LlamaRotaryEmbedding(torch.nn.Module):
     def __init__(self, dim, max_position_embeddings=2048, base=10000, device=None):
         super().__init__()
@@ -499,12 +514,11 @@ class ResAttentionBlock(nn.Module):
 
         self.input_layernorm = LlamaRMSNorm(hidden_size, rms_norm_eps)
         self.q = nn.Linear(hidden_size, hidden_size)
-        nn.init.normal_(self.q.weight, mean=0.0, std=0.01)
         self.k = nn.Linear(hidden_size, hidden_size)
-        nn.init.normal_(self.k.weight, mean=0.0, std=0.01)
         self.v = nn.Linear(hidden_size, hidden_size)
-        # Initialize as an identity mapping
-        nn.init.zeros_(self.v.weight)
+        self.rms_norm_eps = rms_norm_eps
+        # Use SiLU activation to keep consistent with the Llama model
+        # self.act = nn.SiLU()
 
     def forward(self, x, y, x_replica=None):
         res = x
@@ -513,12 +527,12 @@ class ResAttentionBlock(nn.Module):
         if x_replica is not None:
             x_q = x_q.view(-1, self.head_size * self.head_dim)[x_replica]
         y_k = self.k(y)
-        att = torch.nn.functional.cosine_similarity(x_q.view(-1, self.head_dim), y_k.view(-1, self.head_dim))
+        att = torch.nn.functional.cosine_similarity(x_q.view(-1, self.head_dim), y_k.view(-1, self.head_dim), eps=self.rms_norm_eps)
         att = att.view(-1, self.head_size, 1)
         v =  self.v(y).view(-1, self.head_size, self.head_dim)
         v = v * att
         v = v.view(x_q.size())
-        return res + v 
+        return res + v # self.act(v)
 
 class I(nn.Module):
     def __init__(self):
@@ -530,7 +544,17 @@ class I(nn.Module):
 def len_list(x,n):
     return [i for i in x if len(i)<=n]
 
-import torch.cuda.nvtx as nvtx
+
+class ConfigMedusa:
+    def __init__(self, config_medusa):
+        
+        self.num_heads = config_medusa["num_heads"]
+        self.num_layers = config_medusa["num_layers"]
+        self.heads_coefficient = config_medusa["heads_coefficient"]
+        self.decay_coefficient = config_medusa["decay_coefficient"]
+        self.only_heads = config_medusa["only_heads"]
+        self.logging = config_medusa["logging"]
+        self.enable_clover = config_medusa["enable_clover"]
 
 class Clover2Model(nn.Module):
     '''
@@ -549,85 +573,83 @@ class Clover2Model(nn.Module):
         for param in self.lm_head.parameters():
             param.requires_grad = False
 
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        if load_emb:
+        def load_tensor(path, name, vocab_truncate=False):
             from safetensors import safe_open
             import json
             try:
                 with open(os.path.join(path,"model.safetensors.index.json"),"r") as f:
                     index_json=json.loads(f.read())
-                    emb_path=index_json["weight_map"]["model.embed_tokens.weight"]
+                    #print(f"index_json:{index_json} {name}")
+                    emb_path=index_json["weight_map"][name]
+                    #print(f"emb_path:{emb_path} {name}")
                 with safe_open(os.path.join(path,emb_path),
                                 framework="pt",
                                 device="cpu") as f:
-                    tensor_slice = f.get_slice("model.embed_tokens.weight")
-                    vocab_size, hidden_dim = tensor_slice.get_shape()
-                    tensor = tensor_slice[:, :hidden_dim].float()
+                    tensor_slice = f.get_slice(name)
+                    if vocab_truncate:
+                        vocab_size, hidden_dim = tensor_slice.get_shape()
+                        tensor = tensor_slice[:, :hidden_dim]
+                    else:
+                        tensor = tensor_slice[:]
             except:
                 with open(os.path.join(path, "pytorch_model.bin.index.json"), "r") as f:
                     index_json = json.loads(f.read())
-                    emb_path = index_json["weight_map"]["model.embed_tokens.weight"]
+                    emb_path = index_json["weight_map"][name]
                 weights=torch.load(os.path.join(path,emb_path))
-                tensor=weights["model.embed_tokens.weight"].float()
-            self.embed_tokens.weight.data = tensor
-        
-        for param in self.embed_tokens.parameters():
-            param.requires_grad = False
+                tensor=weights[name]
+            return tensor#.cuda()
+                
         
         self.clover_embed_tokens = nn.Embedding(
-                config.vocab_size, config.hidden_size, config.pad_token_id
+                config.vocab_size, config.hidden_size, config.pad_token_id#, dtype=config.torch_dtype
             )
+        # self.init_with_data("clover_embed_tokens", load_tensor(path, f"model.embed_tokens.weight", vocab_truncate=True), self.clover_embed_tokens.weight)
+
         for param in self.clover_embed_tokens.parameters():
             param.requires_grad = False
-        
+            
         #self.init_tree()
+        self.layers = nn.ModuleList([ LlamaDecoderLayer(config,1+i) for i in range(self.config_medusa.num_layers)])
 
-        self.layer = LlamaDecoderLayer(config,1)
-        self.layer2 = None
-        if self.config_medusa.num_layers > 1:
-            self.layer2 = LlamaDecoderLayer(config,2)
-            self.layers = nn.ModuleList([self.layer, self.layer2])
-        else:
-            self.layers = nn.ModuleList([self.layer])
-
-        base_model = AutoModelForCausalLM.from_pretrained(path).model
+        # base_model = AutoModelForCausalLM.from_pretrained(path).model
+        baseconfig = AutoConfig.from_pretrained(path)
+        base_layer = LlamaDecoderLayer(config,1)
+        self.init_with_data("base_layer.self_attn.q_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.self_attn.q_proj.weight"), base_layer.self_attn.q_proj.weight)
+        self.init_with_data("base_layer.self_attn.k_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.self_attn.k_proj.weight"), base_layer.self_attn.k_proj.weight)
+        self.init_with_data("base_layer.self_attn.v_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.self_attn.v_proj.weight"), base_layer.self_attn.v_proj.weight)
+        self.init_with_data("base_layer.self_attn.o_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.self_attn.o_proj.weight"), base_layer.self_attn.o_proj.weight)
+        self.init_with_data("base_layer.mlp.gate_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.mlp.gate_proj.weight"), base_layer.mlp.gate_proj.weight)
+        self.init_with_data("base_layer.mlp.down_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.mlp.down_proj.weight"), base_layer.mlp.down_proj.weight)
+        self.init_with_data("base_layer.mlp.up_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.mlp.up_proj.weight"), base_layer.mlp.up_proj.weight)
+        self.init_with_data("base_layer.input_layernorm", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.input_layernorm.weight"), base_layer.input_layernorm.weight)
+        self.init_with_data("base_layer.post_attention_layernorm", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.post_attention_layernorm.weight"), base_layer.post_attention_layernorm.weight)
+        
+        base_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.init_with_data("base_norm", load_tensor(path, f"model.norm.weight"), base_norm.weight)
         
         self.clover_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         
         self.clover_head_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-
-        '''
-        self.clover_head_mlp = nn.ModuleList(
-            [
-                nn.Sequential(
-                    *(
-                        [ResBlock(config.hidden_size)]
-                        # [nn.Linear(config.hidden_size, config.hidden_size)]
-                        * self.config_medusa.num_layers
-                    ),
-                )
-                for _ in range(self.config_medusa.num_heads)
-            ]
-        )
-        ''' 
         self.clover_head_mlp = nn.Linear(config.hidden_size, config.hidden_size)
         self.clover_head_mlp2 = nn.Linear(config.hidden_size * 2, config.hidden_size)
         self.clover_head_mlp_rnn = ResAttentionBlock(
             config.hidden_size, config.num_attention_heads, config.rms_norm_eps
-        )
+        ) #nn.Linear(config.hidden_size * 2, config.hidden_size)
         self.clover_head_mlp_rnn2 = ResAttentionBlock(
             config.hidden_size, config.num_attention_heads, config.rms_norm_eps
         )
         
         
-        self._init_medusa_head(base_model.layers[-1], base_model.norm)
+        self._init_medusa_head(base_layer, base_norm)#base_model.layers[-1], base_model.norm
         
-        del base_model
+        # del base_model
+        del base_layer
+        del base_norm
         torch.cuda.empty_cache()
 
     def init_tree(self):
         self.tree = mc_sim_7b_63
-        self.tree_buffer=generate_tree_buffers(self.tree,self.embed_tokens.weight.device)
+        self.tree_buffer=generate_tree_buffers(self.tree,self.clover_embed_tokens.weight.device)
 
     def reset(self):
         self.tree_mask=None
@@ -738,9 +760,8 @@ class Clover2Model(nn.Module):
                 base_layer.post_attention_layernorm.weight,
                 clover_layer.post_attention_layernorm.weight,
             )
-        init_clover_layer(0, base_layer, self.layer)
-        if self.layer2 is not None:
-            init_clover_layer(1, base_layer, self.layer2)
+        for idx, layer in enumerate(self.layers):
+            init_clover_layer(idx, base_layer, layer)
 
         self.init_one_param(
             f"clover_norm", base_norm.weight, self.clover_norm.weight
@@ -831,7 +852,7 @@ class Clover2Model(nn.Module):
         def part_eye_with_uniform(tensor, b, scale = 1.0):
             nn.init.uniform_(tensor, b=b)
             tensor[:, :tensor.shape[0]] += torch.eye(tensor.shape[0], device=tensor.device) * scale
-    
+
         if self.clover_head_mlp is not None:
             one_mlp = self.clover_head_mlp
             i = 0
@@ -869,16 +890,52 @@ class Clover2Model(nn.Module):
 
     @classmethod
     def init_one_param(cls, name, base, to, fn=None):
-        if fn is None:
-            to.data[:] = base.data[:]
+        from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
+
+        if is_deepspeed_zero3_enabled():
+            from deepspeed.runtime.zero import GatheredParameters
+
+            with GatheredParameters(base, modifier_rank=None):
+                with GatheredParameters(to, modifier_rank=0):
+                    if fn is None:
+                        to.data[:] = base.data[:].to(to.data.dtype)
+                    else:
+                        # print(f"init weight {name} {base.size()} {new_base.size()}")
+                        to.data[:] = fn(base).data[:].to(to.data.dtype)
+                    print(f"Gathered init weight {name} {to.data}")
         else:
-            to.data[:] = fn(base).data[:]
-        print(f"init weight {name} {to.data} {to.size()}")
+            if fn is None:
+                to.data[:] = base.data[:].to(to.data.dtype)
+            else:
+                to.data[:] = fn(base).data[:].to(to.data.dtype)
+            print(f"init weight {name} {to.data}")
 
     @classmethod
+    def init_with_data(cls, name, data, to, fn=None):
+        from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
+
+        if is_deepspeed_zero3_enabled():
+            from deepspeed.runtime.zero import GatheredParameters
+            with GatheredParameters(to, modifier_rank=0):
+                to.data[:] = data.to(to.dtype)
+                print(f"Gathered init weight {name} {data.dtype} {to.data}")
+        else:
+            to.data[:] = data.to(to.dtype)
+            print(f"init weight {name} {to.data}")
+            
+    @classmethod
     def init_with_method(cls, name, to, method, **kwargs):
-        method(to.data, **kwargs)
-        print(f"init weight {name} {to.data} {to.size()}")
+        from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
+
+        if is_deepspeed_zero3_enabled():
+            from deepspeed.runtime.zero import GatheredParameters
+
+            with GatheredParameters(to, modifier_rank=0):
+                method(to.data, **kwargs)
+                print(f"Gathered init weight {name} {to.data}")
+        else:
+            method(to.data, **kwargs)
+            print(f"init weight {name} {to.data}")
 
     @classmethod
     def eye_with_uniform(cls, tensor, b):
@@ -972,8 +1029,8 @@ class Clover2Model(nn.Module):
         else:
             hidden_states = self.clover_head_mlp_rnn(
                 hidden_states, token_emb
-            )
-        
+        )
+    
         batch_size, seq_length, _ = hidden_states.shape
         seq_length_with_past = seq_length
         past_key_values_length = 0
@@ -1076,7 +1133,7 @@ class Clover2Model(nn.Module):
             hidden_states, token_emb, next_decoder_cache = all_ret
         else:
             hidden_states, token_emb = all_ret
-            
+
         if use_cache:
             return hidden_states, next_decoder_cache
 
@@ -1084,7 +1141,6 @@ class Clover2Model(nn.Module):
 
     def forward_rnn(self, hidden_states, input_ids, head_idx, token_emb=None):
         if head_idx > 0:
-            # token_emb = self.embed_tokens(input_ids)
             if token_emb is None:
                 token_emb = self.clover_embed_tokens(input_ids)
             hidden_states = self.clover_head_mlp_rnn2(
@@ -1267,10 +1323,10 @@ class Clover2Model(nn.Module):
                     token_left -= len(position_ids_list[i])
                 # gen attn_mask
                 if i == 0:
-                    attn_mask.append(torch.eye(sum(repeat_nums[i]), sum(repeat_nums[i]), device=self.embed_tokens.weight.device).unsqueeze(0).unsqueeze(0))
+                    attn_mask.append(torch.eye(sum(repeat_nums[i]), sum(repeat_nums[i]), device=self.clover_embed_tokens.weight.device).unsqueeze(0).unsqueeze(0))
                 else:
                     attn_mask.append(torch.cat([self.repeat_hidden_dim2(attn_mask[i-1],repeat_nums[i]),
-                                               torch.eye(sum(repeat_nums[i]), sum(repeat_nums[i]), device=self.embed_tokens.weight.device).unsqueeze(0).unsqueeze(0)], dim=-1))
+                                               torch.eye(sum(repeat_nums[i]), sum(repeat_nums[i]), device=self.clover_embed_tokens.weight.device).unsqueeze(0).unsqueeze(0)], dim=-1))
                 
                 
                 topk_index = topk_index.view(-1)
@@ -1340,7 +1396,7 @@ class Clover2Model(nn.Module):
                     tree_buffer = generate_beam_tree_buffers(mc_sim_list, device=self.clover_head_mlp_rnn.q.weight.device, topk=token_count)
                     tree_buffer["retrieve_indices_head"] = tree_buffer["retrieve_indices"].to(
                                 self.clover_head_mlp_rnn.q.weight.device)
-                
+
             else:
                 pass
         else:
@@ -1357,7 +1413,6 @@ class Clover2Model(nn.Module):
         self.reset()
         if use_cache:
 
-            # with Timer("draft many"):
             if hasattr(self, "stable_kv") and self.stable_kv is not None:
                 out_hidden, past_key_values = self.forward_layer(hidden_states, input_ids[:, -hidden_states.shape[1]:], past_key_values=self.stable_kv,use_cache=True)
             else:
@@ -1377,26 +1432,24 @@ class Clover2Model(nn.Module):
                     last_headout = F.linear(out_hidden[0], self.lm_head.weight)
 
             for i in range(len(self.tree_buffer['tree_indices'])):
-                with nvtx.range("Forward Pass"):
-                    # sample update ss_token, ss_prob, ss_op
-                    if logits_processor is not None:
-                        topk_index,topk_prob,op=self.sample(last_headout,logits_processor,k=top_k,)
-                    else:
-                        top=torch.topk(last_headout, top_k, dim=-1)
-                        topk_index,topk_prob = top.indices,top.values
-                        topk_prob = nn.functional.softmax(topk_prob, dim=-1)
-                        op=None
+                # sample update ss_token, ss_prob, ss_op
+                if logits_processor is not None:
+                    topk_index,topk_prob,op=self.sample(last_headout,logits_processor,k=top_k,)
+                else:
+                    top=torch.topk(last_headout, top_k, dim=-1)
+                    topk_index,topk_prob = top.indices,top.values
+                    topk_prob = nn.functional.softmax(topk_prob, dim=-1)
+                    op=None
 
-                    ss_token.append(topk_index)
-                    ss_prob.append(topk_prob)
-                    ss_op.append(op)
-                    
-                    topk_index = topk_index.view(-1)
-                    select_index=topk_index[self.tree_buffer['tree_indices'][i]]
-                    input_ids=select_index[None,:]
-                    hidden_states=self.repeat_hidden(out_head, self.tree_buffer["repeat_nums"][i])
-                
-                # with Timer("draft one"):
+                ss_token.append(topk_index)
+                ss_prob.append(topk_prob)
+                ss_op.append(op)
+
+                topk_index = topk_index.view(-1)
+                select_index=topk_index[self.tree_buffer['tree_indices'][i]]
+                input_ids=select_index[None,:]
+                hidden_states=self.repeat_hidden(out_head, self.tree_buffer["repeat_nums"][i])
+
                 out_hidden, out_head = self.forward_rnn(hidden_states, input_ids=input_ids, head_idx=i+1)
                 if not self.diff_device:
                     last_headout = head(out_hidden[0])

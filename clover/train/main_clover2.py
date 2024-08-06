@@ -30,14 +30,14 @@ from transformers import get_linear_schedule_with_warmup, AutoConfig, get_cosine
 torch.backends.cuda.matmul.allow_tf32 = True
 # from ..model.cnets import Model
 # from ..model.clover import CloverModel
-from clover.model.clover2 import Clover2Model
-from clover.model.configs import EConfig
+from clover.model.clover2 import Clover2Model, ConfigMedusa
+from clover.model.configs import EConfig, config_medusa_gobal
 
 
 parser = argparse.ArgumentParser(description='sp')
 parser.add_argument('--project', type=str, default='ess')
 parser.add_argument('--basepath', type=str, default='/cpfs01/user/xiaobin/glj/models/vicuna-7b-v1.5/')
-parser.add_argument('--evaldata', type=str, default='/cpfs01/user/xiaobin/glj/datasets/Spe_eval_merge_7b/sharegpt_0_479_mubf16')
+parser.add_argument('--evaldata', type=str, default='')
 parser.add_argument('--configpath', type=str, default="config.json")
 # parser.add_argument('--lr', type=float, default=5e-4)
 parser.add_argument('--lr', type=float, default=1e-3)
@@ -85,29 +85,9 @@ train_config = {
     # "grad_clip": 1.0,
     "save_freq": 1,
     # "save_freq_batch": 100,
-    "config_medusa": {
-        "num_heads": 5,
-        "num_layers": 2,
-        "heads_coefficient": 1.0,
-        "decay_coefficient": 0.7,
-        "only_heads": True,
-        "logging": True,
-        "enable_clover": True
-    }
+    "config_medusa": config_medusa_gobal
 }
 print(train_config)
-
-
-class ConfigMedusa:
-    def __init__(self, config_medusa):
-        
-        self.num_heads = config_medusa["num_heads"]
-        self.num_layers = config_medusa["num_layers"]
-        self.heads_coefficient = config_medusa["heads_coefficient"]
-        self.decay_coefficient = config_medusa["decay_coefficient"]
-        self.only_heads = config_medusa["only_heads"]
-        self.logging = config_medusa["logging"]
-        self.enable_clover = config_medusa["enable_clover"]
 
 config_medusa = ConfigMedusa(train_config["config_medusa"])
 
@@ -455,20 +435,17 @@ datapath = list_files(train_config["datapath"])
 
 traindatapath = datapath[:int(len(datapath) * 0.95)]
 testdatapath = datapath[int(len(datapath) * 0.95):]
-testevaldatapath = list_files(args.evaldata)
 # print('td',train_config["datapath"])
 # print(datapath)
 # exit()
 traindataset = CustomDataset(traindatapath, transform=aug)
 testdataset = CustomDataset(testdatapath)
-testevaldataset = CustomDataset(testevaldatapath)
-train_loader = DataLoader(traindataset, batch_size=train_config["bs"], shuffle=True,
-                          collate_fn=DataCollatorWithPadding(), num_workers=train_config["num_workers"],
-                          pin_memory=True)
-test_loader = DataLoader(testdataset, batch_size=train_config["bs"], shuffle=False,
-                         collate_fn=DataCollatorWithPadding(), num_workers=train_config["num_workers"], pin_memory=True)
-test_eval_loader = DataLoader(testevaldataset, batch_size=train_config["bs"], shuffle=False,
-                         collate_fn=DataCollatorWithPadding(), num_workers=train_config["num_workers"], pin_memory=True)
+test_eval_loader = None
+if args.evaldata != None:
+    testevaldatapath = list_files(args.evaldata)
+    testevaldataset = CustomDataset(testevaldatapath)
+else:
+    testevaldataset = None
 # for batch_data in train_loader:
 #     print(batch_data)
 
@@ -520,6 +497,16 @@ if ENABLE_DEEPSPEED:
     
     forward_data_type = head_engine.module.weight.data.dtype
 else:
+    train_loader = DataLoader(traindataset, batch_size=train_config["bs"], shuffle=True,
+                            collate_fn=DataCollatorWithPadding(), num_workers=train_config["num_workers"],
+                            pin_memory=True)
+    test_loader = DataLoader(testdataset, batch_size=train_config["bs"], shuffle=False,
+                            collate_fn=DataCollatorWithPadding(), num_workers=train_config["num_workers"], pin_memory=True)
+
+    if testevaldataset is not None:
+        test_eval_loader = DataLoader(testevaldataset, batch_size=train_config["bs"], shuffle=False,
+                                collate_fn=DataCollatorWithPadding(), num_workers=train_config["num_workers"], pin_memory=True)
+
     optimizer = optim.AdamW(model.parameters(), lr=train_config["lr"], betas=(train_config["b1"], train_config["b2"]))
     if is_warmup:
         # scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=num_warmup_steps, 
@@ -922,52 +909,52 @@ for epoch in range(args.start_epoch, num_epochs + 1):
             deepspeed.DeepSpeedEngine.save_checkpoint(model_engine, save_dir=f"{args.cpdir}/state_{epoch}")
 
         
-        
-        k_cor = [[] for _ in range(config_medusa.num_heads)]
-        k_tal = [[] for _ in range(config_medusa.num_heads)]
-        k_cor_dic = {1: [[] for _ in range(config_medusa.num_heads)], 
-                    2: [[] for _ in range(config_medusa.num_heads)], 
-                    3: [[] for _ in range(config_medusa.num_heads)], 
-                    5: [[] for _ in range(config_medusa.num_heads)], 
-                    10: [[] for _ in range(config_medusa.num_heads)]}
-        k_tal_dic = {1: [[] for _ in range(config_medusa.num_heads)], 
-                    2: [[] for _ in range(config_medusa.num_heads)], 
-                    3: [[] for _ in range(config_medusa.num_heads)], 
-                    5: [[] for _ in range(config_medusa.num_heads)], 
-                    10: [[] for _ in range(config_medusa.num_heads)]}
-        for batch_idx, data_test in enumerate(tqdm(test_eval_loader)):
-            if TEST_MODE and batch_idx > 2:
-                break
-            with torch.no_grad():
-                if batch_idx < 30:
-                    hand_data_fn(head_engine, data_test, data_type = forward_data_type)
-                    cors, tals, = getkacc_model(model_engine, data_test, head_engine, max_length=config_medusa.num_heads)
-                    for top_k_ in cors.keys():
-                        for i in range(len(cors[top_k_])):
-                            k_cor_dic[top_k_][i].append(cors[top_k_][i])
-                            k_tal_dic[top_k_][i].append(tals[top_k_][i])
-                else:
+        if test_eval_loader is not None:
+            k_cor = [[] for _ in range(config_medusa.num_heads)]
+            k_tal = [[] for _ in range(config_medusa.num_heads)]
+            k_cor_dic = {1: [[] for _ in range(config_medusa.num_heads)], 
+                        2: [[] for _ in range(config_medusa.num_heads)], 
+                        3: [[] for _ in range(config_medusa.num_heads)], 
+                        5: [[] for _ in range(config_medusa.num_heads)], 
+                        10: [[] for _ in range(config_medusa.num_heads)]}
+            k_tal_dic = {1: [[] for _ in range(config_medusa.num_heads)], 
+                        2: [[] for _ in range(config_medusa.num_heads)], 
+                        3: [[] for _ in range(config_medusa.num_heads)], 
+                        5: [[] for _ in range(config_medusa.num_heads)], 
+                        10: [[] for _ in range(config_medusa.num_heads)]}
+            for batch_idx, data_test in enumerate(tqdm(test_eval_loader)):
+                if TEST_MODE and batch_idx > 2:
                     break
+                with torch.no_grad():
+                    if batch_idx < 30:
+                        hand_data_fn(head_engine, data_test, data_type = forward_data_type)
+                        cors, tals, = getkacc_model(model_engine, data_test, head_engine, max_length=config_medusa.num_heads)
+                        for top_k_ in cors.keys():
+                            for i in range(len(cors[top_k_])):
+                                k_cor_dic[top_k_][i].append(cors[top_k_][i])
+                                k_tal_dic[top_k_][i].append(tals[top_k_][i])
+                    else:
+                        break
 
-        sum_cors_dic = {1: [], 2: [], 3: [], 5: [], 10: []}
-        sum_tals_dic = {1: [], 2: [], 3: [], 5: [], 10: []}
-        for top_k_ in sum_cors_dic.keys():
-            for id, i in enumerate(k_cor_dic[top_k_]):
-                sum_cor = np.array(i).sum()
-                sum_cor = torch.tensor(sum_cor).cuda()
-                sum_cors_dic[top_k_].append(sum_cor)
-            for id, i in enumerate(k_tal_dic[top_k_]):
-                sum_tal = np.array(i).sum()
-                sum_tal = torch.tensor(sum_tal).cuda()
-                sum_tals_dic[top_k_].append(sum_tal)
+            sum_cors_dic = {1: [], 2: [], 3: [], 5: [], 10: []}
+            sum_tals_dic = {1: [], 2: [], 3: [], 5: [], 10: []}
+            for top_k_ in sum_cors_dic.keys():
+                for id, i in enumerate(k_cor_dic[top_k_]):
+                    sum_cor = np.array(i).sum()
+                    sum_cor = torch.tensor(sum_cor).cuda()
+                    sum_cors_dic[top_k_].append(sum_cor)
+                for id, i in enumerate(k_tal_dic[top_k_]):
+                    sum_tal = np.array(i).sum()
+                    sum_tal = torch.tensor(sum_tal).cuda()
+                    sum_tals_dic[top_k_].append(sum_tal)
 
-            sum_cors_dic[top_k_] = gather_for_metrics(sum_cors_dic[top_k_]) #accelerator.
-            sum_tals_dic[top_k_] = gather_for_metrics(sum_tals_dic[top_k_]) #accelerator.
+                sum_cors_dic[top_k_] = gather_for_metrics(sum_cors_dic[top_k_]) #accelerator.
+                sum_tals_dic[top_k_] = gather_for_metrics(sum_tals_dic[top_k_]) #accelerator.
 
-            if is_local_main_process:
-                for i in range(len(sum_cors_dic[top_k_])):
-                    sum_cor = sum_cors_dic[top_k_][i].sum().item()
-                    sum_tal = sum_tals_dic[top_k_][i].sum().item()
-                    wandb.log({f"test_eval/{i}_acc_top{top_k_}": sum_cor/max(sum_tal,1)})
+                if is_local_main_process:
+                    for i in range(len(sum_cors_dic[top_k_])):
+                        sum_cor = sum_cors_dic[top_k_][i].sum().item()
+                        sum_tal = sum_tals_dic[top_k_][i].sum().item()
+                        wandb.log({f"test_eval/{i}_acc_top{top_k_}": sum_cor/max(sum_tal,1)})
 
 

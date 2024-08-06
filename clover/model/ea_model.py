@@ -405,12 +405,12 @@ class EaModel(nn.Module):
 
         input_len = input_ids.shape[1]
         reset_tree_mode(self)
-        outputs = self.base_model(input_ids, past_key_values=past_key_values, use_cache=True)
+        outputs, _ = self.base_model(input_ids, past_key_values=past_key_values, use_cache=True)
         new_token = 0
 
         for idx in range(max_steps):
             input_id = outputs.logits[:, -1:].argmax(dim=-1)
-            outputs = self.base_model(input_id, use_cache=True, past_key_values=past_key_values)
+            outputs, _ = self.base_model(input_id, use_cache=True, past_key_values=past_key_values)
             input_ids = torch.cat([input_ids, input_id], dim=-1)
 
             yield input_ids

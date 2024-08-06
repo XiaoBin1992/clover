@@ -1332,15 +1332,18 @@ import argparse
 import copy
 
 parser = argparse.ArgumentParser(description='sp')
+parser.add_argument('--path', type=str, default="/cpfs01/user/xiaobin/glj/models/vicuna-7b-v1.5/")
 parser.add_argument('--start', type=int, default=0)
 parser.add_argument('--end', type=int, default=100)
 parser.add_argument('--index', type=int, default=1)
 parser.add_argument('--gpu_index', type=int, nargs='+', default=[0])
 parser.add_argument('--outdir', type=str, default='outdir0')
+parser.add_argument('--dataset', type=str, default="ShareGPT_Vicuna_unfiltered/ShareGPT_V4.3_unfiltered_cleaned_split.json")
 args = parser.parse_args()
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_index)[1:-1]
+print(args)
+#os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_index)[1:-1]
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -1349,7 +1352,7 @@ from datasets import load_dataset
 import json
 from fastchat.model.model_adapter import get_conversation_template
 
-bigname="/cpfs01/user/xiaobin/glj/models/vicuna-7b-v1.3"
+bigname=args.path
 # bigname = "/home/lyh/weights/hf/llama/7B/"
 # smallname = "/home/lyh/weights/hf/llama/7B/"
 
@@ -1373,8 +1376,8 @@ def build_dataset_rank(
         tokenizer, split="train",
         select=None,
 ):
-    ds = load_dataset('json', data_files="datasets/ShareGPT_Vicuna_unfiltered/ShareGPT_V4.3_unfiltered_cleaned_split.json")
-    # ds = load_dataset('json', data_files="datasets/Spe_eval_merge/Eval_data_split.json")
+    ds = load_dataset('json', data_files=args.dataset)
+    # ds = load_dataset('json', data_files="/cpfs01/user/xiaobin/glj/datasets/Spe_eval_merge/Eval_data_split.json")
     
     ds = ds['train']
     ds = ds.shuffle(seed=42)
@@ -1464,10 +1467,10 @@ def build_dataset_rank(
     return ds1
 
 bigtokenizer = AutoTokenizer.from_pretrained(bigname,use_fast=False)
-ds = build_dataset_rank(bigtokenizer)
-print(ds)
 bigmodel = LlamaForCausalLM.from_pretrained(bigname,  device_map="auto",torch_dtype=torch.float16)
 bigmodel.eval()
+ds = build_dataset_rank(bigtokenizer)
+print(ds)
 
 
 @torch.no_grad()

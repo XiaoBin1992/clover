@@ -484,15 +484,17 @@ import argparse
 import copy
 
 parser = argparse.ArgumentParser(description='sp')
+parser.add_argument('--path', type=str, default="/cpfs01/user/xiaobin/glj/models/vicuna-7b-v1.5/")
 parser.add_argument('--start', type=int, default=0)
 parser.add_argument('--end', type=int, default=100)
 parser.add_argument('--index', type=int, default=1)
 parser.add_argument('--gpu_index', type=int, nargs='+', default=[0])
 parser.add_argument('--outdir', type=str, default='outdir0')
+parser.add_argument('--dataset', type=str, default="ShareGPT_Vicuna_unfiltered/ShareGPT_V4.3_unfiltered_cleaned_split.json")
 args = parser.parse_args()
 import os
 
-os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_index)[1:-1]
+#os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_index)[1:-1]
 import torch
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -501,7 +503,11 @@ from datasets import load_dataset
 import json
 from fastchat.model.model_adapter import get_conversation_template
 
-bigname="/cpfs01/user/xiaobin/glj/models/Meta-Llama-3-8B-Instruct"
+bigname=args.path
+# bigname = "/home/lyh/weights/hf/llama/7B/"
+# smallname = "/home/lyh/weights/hf/llama/7B/"
+
+
 
 def longest_common_prefix(list1, list2):
     prefix_length = 0
@@ -521,7 +527,7 @@ def build_dataset_rank(
         tokenizer, split="train",
         select=None,
 ):
-    ds = load_dataset('json', data_files="/cpfs01/user/xiaobin/glj/datasets/ShareGPT_Vicuna_unfiltered/ShareGPT_V4.3_unfiltered_cleaned_split.json")
+    ds = load_dataset('json', data_files=args.dataset)
     # ds = load_dataset('json', data_files="/cpfs01/user/xiaobin/glj/datasets/Spe_eval_merge/Eval_data_split.json")
     ds = ds['train']
     ds = ds.shuffle(seed=42)
@@ -630,12 +636,19 @@ def build_dataset_rank(
     return ds1
 
 bigtokenizer = AutoTokenizer.from_pretrained(bigname,use_fast=False)
+# quantization_config = BitsAndBytesConfig(
+#         load_in_4bit=True,
+#         bnb_4bit_compute_dtype=torch.bfloat16,
+#         bnb_4bit_use_double_quant=True,
+#         bnb_4bit_quant_type="nf4",
+#     )
+# bigmodel = AutoModelForCausalLM.from_pretrained(bigname, load_in_4bit=True, device_map={"": 0}, )
+# smallmodel = AutoModelForCausalLM.from_pretrained(smallname, load_in_4bit=True, device_map={"": 1}, )
+bigmodel = LlamaForCausalLM.from_pretrained(bigname,  device_map="auto",torch_dtype=torch.bfloat16)
+#bigmodel = AutoModelForCausalLM.from_pretrained(bigname,  device_map="auto",load_in_8bit=True)
+bigmodel.eval()
 ds = build_dataset_rank(bigtokenizer)
 print(ds)
-bigmodel = LlamaForCausalLM.from_pretrained(bigname,  device_map="auto",torch_dtype=torch.bfloat16)
-bigmodel.eval()
-
-
 
 @torch.no_grad()
 def ge(data):
