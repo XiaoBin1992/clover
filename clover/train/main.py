@@ -1,4 +1,5 @@
 import argparse
+import shutil
 
 parser = argparse.ArgumentParser(description='sp')
 parser.add_argument('--basepath', type=str, default='/home/lyh/weights/hf/vicuna_v13/7B/')
@@ -106,6 +107,11 @@ def list_files(path):
             datapath.append(file_path)
     return datapath
 
+def copy_and_rename_file(src_path, dest_dir):  
+    os.makedirs(dest_dir, exist_ok=True)  
+    dest_path = os.path.join(dest_dir, 'config.json')  
+    shutil.copy(src_path, dest_path)  
+    print(f"Copied and renamed file to {dest_path}")  
 
 class AddGaussianNoise:
     def __init__(self, mean=0.0, std=0.0):
@@ -482,3 +488,4 @@ for epoch in range(num_epochs + 1):
             # accelerator.save_state(output_dir=f"{args.outdir}/state_{epoch}")
             # os.system(f"cp -r {args.outdir} {args.cpdir}")
             accelerator.save_state(output_dir=f"{args.cpdir}/state_{epoch}")
+            copy_and_rename_file(args.configpath, f"{args.cpdir}/epoch_{epoch + 1}")  

@@ -1,4 +1,4 @@
-<img src="figs/logo.png" alt="Clover" width="8%" align="left"><div align="center"><h1>&nbsp;Clover: Regressive Lightweight Speculative Decoding</h1></div>
+<img src="figs/logo.png" alt="Clover" width="8%" align="left"><div align="center"><h1> Clover: Regressive Lightweight Speculative Decoding</h1></div>
 
 <!-- <h1 align="center">
   Clover: Regressive Lightweight Speculative Decoding
@@ -61,10 +61,18 @@ pip install -e .
 
 ### Generate Train Data
 
-You can run the following command to generate the training data.
+
+Then, you can run the following command to generate the training data from .json files.
 
 ```bash
 CUDA_VISIBLE_DEVICES=4,5  python -m clover.ge_data.allocation --python_name [python script like ge_data_all_vicuna_nonnorm.py/ge_data_all_llama3_nonnorm.py] --model_path [model path] --outdir [path of data] --dataset [ShareGPT_Vicuna_unfiltered/ShareGPT_V4.3_unfiltered_cleaned_split.json] --gpus 0,1  > info.log 2>&1 &
+```
+
+To generate evaluation data(.json files) for monitoring metrics during training, you can use the following script, using Vicuna 7B as an example:
+```bash
+sh scripts/7b/test_speed_base.sh
+python ge_data/merge_eval_data.py
+Execute command 'clover.ge_data.allocation' to obtain the final formatted data, the command usage is the same as above.
 ```
 
 ### Train and Evaluation Inference
@@ -72,11 +80,13 @@ CUDA_VISIBLE_DEVICES=4,5  python -m clover.ge_data.allocation --python_name [pyt
 clover/stripts* provides examples of .sh files.
 
 Get indicator data:
-clover/clover/evaluation/speed_spe.py
-clover/clover/evaluation/tau_spe.py
+clover/clover/evaluation/speed_spe.py --path .jsonl
+clover/clover/evaluation/tau_spe.py --path .jsonl
 
 ### Reference
+
 For technical details and full experimental results, please check [the paper of Clover](https://arxiv.org/abs/2405.00263) and [the paper of Clover-2](https://arxiv.org/abs/2408.00264).
+
 <!-- ```
 
 ``` -->
