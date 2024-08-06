@@ -2,7 +2,7 @@ import argparse
 import copy
 
 parser = argparse.ArgumentParser(description='sp')
-parser.add_argument('--python_name', type=str, default='ge_data_all_vicuna_nonnorm.py')
+parser.add_argument('--python_name', type=str, default='ge_data_all_vicuna.py')
 parser.add_argument('--model_path', type=str, default='0')
 parser.add_argument('--outdir', type=str, default='0')
 parser.add_argument('--gpus', type=str, default='0,1,2,3')

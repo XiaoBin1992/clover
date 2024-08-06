@@ -544,7 +544,18 @@ class I(nn.Module):
 def len_list(x,n):
     return [i for i in x if len(i)<=n]
 
-    
+
+class ConfigMedusa:
+    def __init__(self, config_medusa):
+        
+        self.num_heads = config_medusa["num_heads"]
+        self.num_layers = config_medusa["num_layers"]
+        self.heads_coefficient = config_medusa["heads_coefficient"]
+        self.decay_coefficient = config_medusa["decay_coefficient"]
+        self.only_heads = config_medusa["only_heads"]
+        self.logging = config_medusa["logging"]
+        self.enable_clover = config_medusa["enable_clover"]
+
 class Clover2Model(nn.Module):
     '''
     output: [logits_1 (seq_len-1,向后两位), logits_2 (seq_len-2), logits_3 (seq_len-3)] , main_logits
@@ -592,6 +603,8 @@ class Clover2Model(nn.Module):
         self.clover_embed_tokens = nn.Embedding(
                 config.vocab_size, config.hidden_size, config.pad_token_id#, dtype=config.torch_dtype
             )
+        # self.init_with_data("clover_embed_tokens", load_tensor(path, f"model.embed_tokens.weight", vocab_truncate=True), self.clover_embed_tokens.weight)
+
         for param in self.clover_embed_tokens.parameters():
             param.requires_grad = False
             
@@ -621,7 +634,7 @@ class Clover2Model(nn.Module):
         self.clover_head_mlp2 = nn.Linear(config.hidden_size * 2, config.hidden_size)
         self.clover_head_mlp_rnn = ResAttentionBlock(
             config.hidden_size, config.num_attention_heads, config.rms_norm_eps
-        )
+        ) #nn.Linear(config.hidden_size * 2, config.hidden_size)
         self.clover_head_mlp_rnn2 = ResAttentionBlock(
             config.hidden_size, config.num_attention_heads, config.rms_norm_eps
         )
@@ -839,7 +852,7 @@ class Clover2Model(nn.Module):
         def part_eye_with_uniform(tensor, b, scale = 1.0):
             nn.init.uniform_(tensor, b=b)
             tensor[:, :tensor.shape[0]] += torch.eye(tensor.shape[0], device=tensor.device) * scale
-    
+
         if self.clover_head_mlp is not None:
             one_mlp = self.clover_head_mlp
             i = 0
@@ -1016,8 +1029,8 @@ class Clover2Model(nn.Module):
         else:
             hidden_states = self.clover_head_mlp_rnn(
                 hidden_states, token_emb
-            )
-        
+        )
+    
         batch_size, seq_length, _ = hidden_states.shape
         seq_length_with_past = seq_length
         past_key_values_length = 0

@@ -14,34 +14,11 @@ from transformers import AutoTokenizer
 import os
 from huggingface_hub import hf_hub_download
 from .cnets import Model
-from .clover2 import Clover2Model
-from .configs import EConfig
+from .clover2 import Clover2Model, ConfigMedusa
+from .configs import EConfig, config_medusa_gobal
 from huggingface_hub import hf_hub_download
 
 from safetensors.torch import load_file
-
-class ConfigMedusa:
-    def __init__(self, config_medusa):
-        
-        self.num_heads = config_medusa["num_heads"]
-        self.num_layers = config_medusa["num_layers"]
-        self.heads_coefficient = config_medusa["heads_coefficient"]
-        self.decay_coefficient = config_medusa["decay_coefficient"]
-        self.only_heads = config_medusa["only_heads"]
-        self.logging = config_medusa["logging"]
-        self.enable_clover = config_medusa["enable_clover"]
-        
-config_medusa = {
-    "num_heads": 5,
-    "num_layers": 2,
-    "heads_coefficient": 0.01,
-    "decay_coefficient": 0.7,
-    "only_heads": True,
-    "logging": True,
-    "enable_clover": True
-}
-
-config_medusa = ConfigMedusa(config_medusa)
 
 
 class CloModel(nn.Module):
@@ -67,7 +44,8 @@ class CloModel(nn.Module):
             bias=con["bias"]
         except:
             bias=True
-        self.ea_layer = Clover2Model(config, config_medusa, base_model.lm_head, load_emb=True, path = base_model_name_or_path)
+        
+        self.ea_layer = Clover2Model(config, ConfigMedusa(config_medusa_gobal), base_model.lm_head, load_emb=True, path = base_model_name_or_path)
 
         low_memory=False
         
@@ -111,9 +89,9 @@ class CloModel(nn.Module):
                 base_model_path, **kwargs
             )
 
-        configpath=os.path.join(ea_model_path,"config.json")
+        configpath=os.path.join(base_model_path, "config.json") #ea_model_path
         if not os.path.exists(configpath):
-            configpath = hf_hub_download(ea_model_path, "config.json")
+            configpath = hf_hub_download(base_model_path, "config.json") #ea_model_path
         model = cls(
             base_model,
             base_model_path,
