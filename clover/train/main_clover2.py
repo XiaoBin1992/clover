@@ -30,8 +30,8 @@ from transformers import get_linear_schedule_with_warmup, AutoConfig, get_cosine
 torch.backends.cuda.matmul.allow_tf32 = True
 # from ..model.cnets import Model
 # from ..model.clover import CloverModel
-from clover.model.clover2 import Clover2Model, ConfigMedusa
-from clover.model.configs import EConfig, config_medusa_gobal
+from clover.model.clover2 import Clover2Model, ConfigClover
+from clover.model.configs import EConfig
 
 
 parser = argparse.ArgumentParser(description='sp')
@@ -85,11 +85,16 @@ train_config = {
     # "grad_clip": 1.0,
     "save_freq": 1,
     # "save_freq_batch": 100,
-    "config_medusa": config_medusa_gobal
+    "clover": {
+        "num_heads": 5,
+        "num_layers": 2,
+        "heads_coefficient": 1.0,
+        "decay_coefficient": 0.7,
+    }
 }
 print(train_config)
 
-config_medusa = ConfigMedusa(train_config["config_medusa"])
+config_clover = ConfigClover(train_config["clover"])
 
 if ENABLE_DEEPSPEED:
     deepspeed.init_distributed()
@@ -184,12 +189,16 @@ def list_files(path):
             datapath.append(file_path)
     return datapath
 
-def copy_and_rename_file(src_path, dest_dir):  
+def copy_and_updata_config_file(src_path, dest_dir):  
     os.makedirs(dest_dir, exist_ok=True)  
+    with open(src_path, "r") as f:
+        config_js = json.loads(f.read())
+        config_js["clover"] = train_config["clover"]
     dest_path = os.path.join(dest_dir, 'config.json')  
-    shutil.copy(src_path, dest_path)  
+    #shutil.copy(src_path, dest_path)  
+    with open(dest_path, 'w') as file:
+        json.dump(config_js, file)
     print(f"Copied and renamed file to {dest_path}")  
-
 
 class AddGaussianNoise:
     def __init__(self, mean=0.0, std=0.0):
@@ -316,7 +325,7 @@ class DataCollatorWithPadding:
 
 
 @torch.no_grad()
-def getkacc_model(model, data, head, max_length=config_medusa.num_heads):
+def getkacc_model(model, data, head, max_length=config_clover.num_heads):
     hidden_states = data["hidden_states"]
     hidden_states_onnorm = data["hidden_states_onnorm"]
     input_ids = data["input_ids"]
@@ -456,7 +465,7 @@ if is_main_process:
 # model , criterion , optimizer, num_epochs , num_warmup_steps , total_steps , scheduler , 
 # ===========================================================================
 config = EConfig.from_pretrained(train_config["config_path"])
-model = Clover2Model(config, config_medusa, head, load_emb=True, path=args.basepath)
+model = Clover2Model(config, head, config_clover=config_clover, load_emb=True, path=args.basepath)
 
 # criterion = nn.CrossEntropyLoss(reduction='none')
 # 
@@ -620,16 +629,16 @@ def hand_data_fn(head, data, data_type = None):
     update_data("hidden_states", data_type=data_type) #
     
     if not args.label_mask:
-        data["input_ids_cor_list"] = [1.0] * config_medusa.num_heads
+        data["input_ids_cor_list"] = [1.0] * config_clover.num_heads
     else:
-        data["input_ids_cor_list"] = get_id_mask(head, data["hidden_states"], data["input_ids"], config_medusa.num_heads, sampel_topk=8, sampel_topp=0.8)
+        data["input_ids_cor_list"] = get_id_mask(head, data["hidden_states"], data["input_ids"], config_clover.num_heads, sampel_topk=8, sampel_topp=0.8)
         
 for epoch in range(args.start_epoch, num_epochs + 1):
-    top_3acc = [[0 for _ in range(3)] for i in range(config_medusa.num_heads)]
-    correct = [0 for _ in range(config_medusa.num_heads)]
-    total = [0 for _ in range(config_medusa.num_heads)]
+    top_3acc = [[0 for _ in range(3)] for i in range(config_clover.num_heads)]
+    correct = [0 for _ in range(config_clover.num_heads)]
+    total = [0 for _ in range(config_clover.num_heads)]
     epoch_loss = 0
-    epoch_loss_i = [0 for _ in range(config_medusa.num_heads)]
+    epoch_loss_i = [0 for _ in range(config_clover.num_heads)]
     num_batches = 0
     model.train()
     
@@ -653,17 +662,17 @@ for epoch in range(args.start_epoch, num_epochs + 1):
                 target_p = target_p.detach()
                 # print_tensor(f"input target_p", target_p)
             # logits_seq = model_engine(data["hidden_states"], input_ids=data["input_ids"], attention_mask=data["attention_mask"])
-            # medusa_hidden_states, token_emb = model_engine(data["hidden_states_onnorm"], input_ids=data["input_ids"], attention_mask=data["attention_mask"])
+            # clover_hidden_states, token_emb = model_engine(data["hidden_states_onnorm"], input_ids=data["input_ids"], attention_mask=data["attention_mask"])
             hidden_states_seq_list = model_engine(data["hidden_states_onnorm"], input_ids=data["input_ids"], attention_mask=data["attention_mask"])
             # print_tensor(f"model_engine hidden_states_seq_list", hidden_states_seq_list)
-            # print(f"medusa_hidden_states:{medusa_hidden_states.size()}")
-            # logp_seq = [0 for i in range(config_medusa.num_heads)]
-            # for i in range(config_medusa.num_heads):
+            # print(f"clover_hidden_states:{clover_hidden_states.size()}")
+            # logp_seq = [0 for i in range(config_clover.num_heads)]
+            # for i in range(config_clover.num_heads):
             #     logp_seq[i] = nn.LogSoftmax(dim=2)(logits_seq[i])
             loss_mask_in = data["loss_mask"][:, :, None]
-            loss_i = [0 for i in range(config_medusa.num_heads)]
-            loss_i_p = [0 for i in range(config_medusa.num_heads)]
-            loss_i_v = [0 for i in range(config_medusa.num_heads)]
+            loss_i = [0 for i in range(config_clover.num_heads)]
+            loss_i_p = [0 for i in range(config_clover.num_heads)]
+            loss_i_v = [0 for i in range(config_clover.num_heads)]
             
 
             target = data["target"]
@@ -671,13 +680,13 @@ for epoch in range(args.start_epoch, num_epochs + 1):
             
             loss_mask_metrics = []
             # loss_list = []
-            for i in range(0, config_medusa.num_heads):
+            for i in range(0, config_clover.num_heads):
                 with torch.no_grad():
                     cur_loss_mask_in = loss_mask_in[:, i:] * input_ids_cor_list[i]
                     total_size = max(loss_mask_in[:, i:].numel(), 1)
                     loss_mask_metrics.append((loss_mask_in[:, i:].sum().item() / total_size, cur_loss_mask_in.sum().item() / total_size))
                     
-                # medusa_hidden_states, hidden_states_seq, logits_seq = model_engine.module.forward_one_head(i, medusa_hidden_states, token_emb)
+                # clover_hidden_states, hidden_states_seq, logits_seq = model_engine.module.forward_one_head(i, clover_hidden_states, token_emb)
                 hidden_states_seq = hidden_states_seq_list[i]
                 if i > 0:
                     hidden_states_seq = hidden_states_seq[:, :-i]
@@ -693,7 +702,7 @@ for epoch in range(args.start_epoch, num_epochs + 1):
                 #     loss_list.append(vloss.view(1, 1))
                 #     loss_list.append(ploss.view(1, 1))
                 #     # print(f"vloss {vloss} {vloss.size()} {ploss} {ploss.size()}")
-                # return torch.concat(loss_list, dim=-1).view(config_medusa.num_heads, 2)
+                # return torch.concat(loss_list, dim=-1).view(config_clover.num_heads, 2)
                 # if False and args.gradient_checkpointing:
                 #     all_loss = torch.utils.checkpoint.checkpoint(
                 #         get_all_loss,
@@ -703,7 +712,7 @@ for epoch in range(args.start_epoch, num_epochs + 1):
                 #     all_loss = get_all_loss(loss_mask_in, data["target"], *hidden_states_seq_list)
                 
                 # print(f"vloss {i} vloss:{vloss} ploss:{ploss}")
-                loss_scale = config_medusa.decay_coefficient ** i * config_medusa.heads_coefficient
+                loss_scale = config_clover.decay_coefficient ** i * config_clover.heads_coefficient
                 loss_i_p[i] = ploss
                 loss_i_v[i] = vloss
                 loss_i[i] = (train_config["v_w"] * vloss + train_config["p_w"] * ploss) * loss_scale
@@ -721,7 +730,7 @@ for epoch in range(args.start_epoch, num_epochs + 1):
                     scheduler.step()
                 
             with torch.no_grad():
-                for i in range(0, config_medusa.num_heads):
+                for i in range(0, config_clover.num_heads):
                     hidden_states_seq = hidden_states_seq_list[i]
                     if i > 0:
                         hidden_states_seq = hidden_states_seq[:, :-i]
@@ -746,7 +755,7 @@ for epoch in range(args.start_epoch, num_epochs + 1):
             #     ct = []
             #     cc = []
             #     topkacc = []
-            #     for i in range(0, config_medusa.num_heads):
+            #     for i in range(0, config_clover.num_heads):
             #         out_head = logits_seq[i]
             #         target_head = main_logits[:, i:].contiguous()
             #         loss_mask = loss_mask_in[:, i:].contiguous()
@@ -763,7 +772,7 @@ for epoch in range(args.start_epoch, num_epochs + 1):
             #         correct[i] += cc[i]
         if is_main_process and ct[0] != 0:
             logdict = {"train/lr": optimizer.optimizer.param_groups[0]["lr"], "train/loss": loss.item()}
-            for j in range(config_medusa.num_heads):
+            for j in range(config_clover.num_heads):
                 logdict[f'train/loss_head_{j+1}'] = loss_i[j].item()
                 logdict[f'train/loss_head_{j+1}_p'] = loss_i_p[j].item()
                 logdict[f'train/loss_head_{j+1}_v'] = loss_i_v[j].item()
@@ -778,13 +787,13 @@ for epoch in range(args.start_epoch, num_epochs + 1):
         
         # del ploss, vloss
         epoch_loss += loss.item()
-        for j in range(config_medusa.num_heads):
+        for j in range(config_clover.num_heads):
             epoch_loss_i[j] += loss_i[j].item()
         num_batches += 1
         del loss_i
         
     epoch_loss /= num_batches
-    for j in range(config_medusa.num_heads):
+    for j in range(config_clover.num_heads):
         correct[j], total[j] = torch.tensor(correct[j]).cuda(), torch.tensor(total[j]).cuda()
         correct[j] = gather_for_metrics(correct[j]) #accelerator.
         total[j] = gather_for_metrics(total[j]) #accelerator.
@@ -803,15 +812,15 @@ for epoch in range(args.start_epoch, num_epochs + 1):
         wandb.log({f"train/epochloss": epoch_loss})
     
     if (epoch + 1) % train_config["save_freq"] == 0:
-        top_3acc_test = [[0 for _ in range(3)] for i in range(config_medusa.num_heads)]
-        correct_test = [0 for i in range(config_medusa.num_heads)]
-        total_test = [0 for i in range(config_medusa.num_heads)]
+        top_3acc_test = [[0 for _ in range(3)] for i in range(config_clover.num_heads)]
+        correct_test = [0 for i in range(config_clover.num_heads)]
+        total_test = [0 for i in range(config_clover.num_heads)]
         epoch_loss_test = 0
-        epoch_loss_test_i = [0 for i in range(config_medusa.num_heads)]
+        epoch_loss_test_i = [0 for i in range(config_clover.num_heads)]
         num_batches_test = 0
         model.eval()
         
-        # k_acc = [[] for i in range(config_medusa.num_heads)]
+        # k_acc = [[] for i in range(config_clover.num_heads)]
         for batch_idx, data_test in enumerate(tqdm(test_loader)):
             if TEST_MODE and batch_idx > 2:
                 break
@@ -822,7 +831,7 @@ for epoch in range(args.start_epoch, num_epochs + 1):
                 # out_hidden, out_head = self.forward_rnn(hidden_states, input_ids=input_ids, head_idx=0)
                 
                 #
-                # medusa_hidden_states, token_emb = model_engine(data_test["hidden_states_onnorm"], input_ids=data_test["input_ids"], attention_mask=data_test["attention_mask"])
+                # clover_hidden_states, token_emb = model_engine(data_test["hidden_states_onnorm"], input_ids=data_test["input_ids"], attention_mask=data_test["attention_mask"])
                 
                 
                 hand_data_fn(head_engine, data_test, data_type = forward_data_type)
@@ -835,13 +844,13 @@ for epoch in range(args.start_epoch, num_epochs + 1):
                 loss_mask_in_test = data_test["loss_mask"][:, :, None]
                 input_ids_cor_list = data_test["input_ids_cor_list"]
                 
-                # logp_seq_test = [0 for i in range(config_medusa.num_heads)]
-                loss_test_i = [0 for _ in range(config_medusa.num_heads)]
+                # logp_seq_test = [0 for i in range(config_clover.num_heads)]
+                loss_test_i = [0 for _ in range(config_clover.num_heads)]
                 ct_test = []
                 cc_test = []
                 topkacc_test = []
-                for i in range(config_medusa.num_heads):
-                    # medusa_hidden_states, hidden_states_seq, logits_seq = model_engine.module.forward_one_head(i, medusa_hidden_states, token_emb)
+                for i in range(config_clover.num_heads):
+                    # clover_hidden_states, hidden_states_seq, logits_seq = model_engine.module.forward_one_head(i, clover_hidden_states, token_emb)
                     cur_loss_mask_in_test = loss_mask_in_test[:, i:] * input_ids_cor_list[i]
                     
                     hidden_states_seq = hidden_states_seq_list[i]
@@ -849,7 +858,7 @@ for epoch in range(args.start_epoch, num_epochs + 1):
                         hidden_states_seq = hidden_states_seq[:, :-i]
                     logits_seq = model_engine.module.forward_lm_head(hidden_states_seq)
                     logp_seq_test = nn.LogSoftmax(dim=2)(logits_seq)
-                    loss_test_i[i] = -torch.sum(torch.sum(cur_loss_mask_in_test * (logp_seq_test * target_p_test[:, i:]), 2)) / (cur_loss_mask_in_test.sum()+1e-5) * config_medusa.decay_coefficient ** i * config_medusa.heads_coefficient
+                    loss_test_i[i] = -torch.sum(torch.sum(cur_loss_mask_in_test * (logp_seq_test * target_p_test[:, i:]), 2)) / (cur_loss_mask_in_test.sum()+1e-5) * config_clover.decay_coefficient ** i * config_clover.heads_coefficient
                     
                     out_head = logits_seq
                     target_head = main_logits_test[:, i:].contiguous()
@@ -868,12 +877,12 @@ for epoch in range(args.start_epoch, num_epochs + 1):
                 
                 loss_test = sum(loss_test_i)
             epoch_loss_test += loss_test.item()
-            for j in range(config_medusa.num_heads):
+            for j in range(config_clover.num_heads):
                 epoch_loss_test_i[j] += loss_test_i[j].item()
             num_batches_test += 1
             
         
-        for i in range(config_medusa.num_heads):
+        for i in range(config_clover.num_heads):
             epoch_loss_test_i[i] /= num_batches_test
             correct_test[i], total_test[i] = torch.tensor(correct_test[i]).cuda(), torch.tensor(total_test[i]).cuda()
             correct_test[i] = gather_for_metrics(correct_test[i]) #accelerator.
@@ -895,7 +904,7 @@ for epoch in range(args.start_epoch, num_epochs + 1):
             wandb.log({f"test/epochloss": epoch_loss_test})
             if not ENABLE_DEEPSPEED and not TEST_MODE:
                 accelerator.save_state(output_dir=f"{args.cpdir}/epoch_{epoch + 1}")
-                copy_and_rename_file(args.configpath, f"{args.cpdir}/epoch_{epoch + 1}")  
+                copy_and_updata_config_file(args.configpath, f"{args.cpdir}/epoch_{epoch + 1}")  
                 subdirs = [d for d in os.listdir(args.cpdir) if os.path.isdir(os.path.join(args.cpdir, d))]  
                 subdirs = sorted(subdirs, key=lambda d: os.path.getmtime(os.path.join(args.cpdir, d)))  
                 
@@ -910,25 +919,25 @@ for epoch in range(args.start_epoch, num_epochs + 1):
 
         
         if test_eval_loader is not None:
-            k_cor = [[] for _ in range(config_medusa.num_heads)]
-            k_tal = [[] for _ in range(config_medusa.num_heads)]
-            k_cor_dic = {1: [[] for _ in range(config_medusa.num_heads)], 
-                        2: [[] for _ in range(config_medusa.num_heads)], 
-                        3: [[] for _ in range(config_medusa.num_heads)], 
-                        5: [[] for _ in range(config_medusa.num_heads)], 
-                        10: [[] for _ in range(config_medusa.num_heads)]}
-            k_tal_dic = {1: [[] for _ in range(config_medusa.num_heads)], 
-                        2: [[] for _ in range(config_medusa.num_heads)], 
-                        3: [[] for _ in range(config_medusa.num_heads)], 
-                        5: [[] for _ in range(config_medusa.num_heads)], 
-                        10: [[] for _ in range(config_medusa.num_heads)]}
+            k_cor = [[] for _ in range(config_clover.num_heads)]
+            k_tal = [[] for _ in range(config_clover.num_heads)]
+            k_cor_dic = {1: [[] for _ in range(config_clover.num_heads)], 
+                        2: [[] for _ in range(config_clover.num_heads)], 
+                        3: [[] for _ in range(config_clover.num_heads)], 
+                        5: [[] for _ in range(config_clover.num_heads)], 
+                        10: [[] for _ in range(config_clover.num_heads)]}
+            k_tal_dic = {1: [[] for _ in range(config_clover.num_heads)], 
+                        2: [[] for _ in range(config_clover.num_heads)], 
+                        3: [[] for _ in range(config_clover.num_heads)], 
+                        5: [[] for _ in range(config_clover.num_heads)], 
+                        10: [[] for _ in range(config_clover.num_heads)]}
             for batch_idx, data_test in enumerate(tqdm(test_eval_loader)):
                 if TEST_MODE and batch_idx > 2:
                     break
                 with torch.no_grad():
                     if batch_idx < 30:
                         hand_data_fn(head_engine, data_test, data_type = forward_data_type)
-                        cors, tals, = getkacc_model(model_engine, data_test, head_engine, max_length=config_medusa.num_heads)
+                        cors, tals, = getkacc_model(model_engine, data_test, head_engine, max_length=config_clover.num_heads)
                         for top_k_ in cors.keys():
                             for i in range(len(cors[top_k_])):
                                 k_cor_dic[top_k_][i].append(cors[top_k_][i])

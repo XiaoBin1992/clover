@@ -545,26 +545,25 @@ def len_list(x,n):
     return [i for i in x if len(i)<=n]
 
 
-class ConfigMedusa:
-    def __init__(self, config_medusa):
-        
-        self.num_heads = config_medusa["num_heads"]
-        self.num_layers = config_medusa["num_layers"]
-        self.heads_coefficient = config_medusa["heads_coefficient"]
-        self.decay_coefficient = config_medusa["decay_coefficient"]
-        self.only_heads = config_medusa["only_heads"]
-        self.logging = config_medusa["logging"]
-        self.enable_clover = config_medusa["enable_clover"]
+class ConfigClover:
+    def __init__(self, config_clover):
+        self.num_heads = config_clover["num_heads"]
+        self.num_layers = config_clover["num_layers"]
+        self.heads_coefficient = config_clover["heads_coefficient"]
+        self.decay_coefficient = config_clover["decay_coefficient"]
 
 class Clover2Model(nn.Module):
     '''
     output: [logits_1 (seq_len-1,向后两位), logits_2 (seq_len-2), logits_3 (seq_len-3)] , main_logits
     '''
-    def __init__(self, config, config_medusa, head, load_emb=False, 
+    def __init__(self, config, head, config_clover=None, load_emb=False, 
                  path='/cpfs01/user/xiaobin/glj/models/vicuna-7b-v1.5', 
                  bias=True):
         super().__init__()
-        self.config_medusa = config_medusa
+        if config_clover == None:
+            self.config_clover = ConfigClover(config.clover)
+        else:
+            self.config_clover = config_clover
         self.gradient_checkpointing = True
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
@@ -609,20 +608,20 @@ class Clover2Model(nn.Module):
             param.requires_grad = False
             
         #self.init_tree()
-        self.layers = nn.ModuleList([ LlamaDecoderLayer(config,1+i) for i in range(self.config_medusa.num_layers)])
+        self.layers = nn.ModuleList([ LlamaDecoderLayer(config,1+i) for i in range(self.config_clover.num_layers)])
 
         # base_model = AutoModelForCausalLM.from_pretrained(path).model
-        baseconfig = AutoConfig.from_pretrained(path)
+        # baseconfig = AutoConfig.from_pretrained(path)
         base_layer = LlamaDecoderLayer(config,1)
-        self.init_with_data("base_layer.self_attn.q_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.self_attn.q_proj.weight"), base_layer.self_attn.q_proj.weight)
-        self.init_with_data("base_layer.self_attn.k_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.self_attn.k_proj.weight"), base_layer.self_attn.k_proj.weight)
-        self.init_with_data("base_layer.self_attn.v_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.self_attn.v_proj.weight"), base_layer.self_attn.v_proj.weight)
-        self.init_with_data("base_layer.self_attn.o_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.self_attn.o_proj.weight"), base_layer.self_attn.o_proj.weight)
-        self.init_with_data("base_layer.mlp.gate_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.mlp.gate_proj.weight"), base_layer.mlp.gate_proj.weight)
-        self.init_with_data("base_layer.mlp.down_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.mlp.down_proj.weight"), base_layer.mlp.down_proj.weight)
-        self.init_with_data("base_layer.mlp.up_proj", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.mlp.up_proj.weight"), base_layer.mlp.up_proj.weight)
-        self.init_with_data("base_layer.input_layernorm", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.input_layernorm.weight"), base_layer.input_layernorm.weight)
-        self.init_with_data("base_layer.post_attention_layernorm", load_tensor(path, f"model.layers.{baseconfig.num_hidden_layers-1}.post_attention_layernorm.weight"), base_layer.post_attention_layernorm.weight)
+        self.init_with_data("base_layer.self_attn.q_proj", load_tensor(path, f"model.layers.{config.num_hidden_layers-1}.self_attn.q_proj.weight"), base_layer.self_attn.q_proj.weight)
+        self.init_with_data("base_layer.self_attn.k_proj", load_tensor(path, f"model.layers.{config.num_hidden_layers-1}.self_attn.k_proj.weight"), base_layer.self_attn.k_proj.weight)
+        self.init_with_data("base_layer.self_attn.v_proj", load_tensor(path, f"model.layers.{config.num_hidden_layers-1}.self_attn.v_proj.weight"), base_layer.self_attn.v_proj.weight)
+        self.init_with_data("base_layer.self_attn.o_proj", load_tensor(path, f"model.layers.{config.num_hidden_layers-1}.self_attn.o_proj.weight"), base_layer.self_attn.o_proj.weight)
+        self.init_with_data("base_layer.mlp.gate_proj", load_tensor(path, f"model.layers.{config.num_hidden_layers-1}.mlp.gate_proj.weight"), base_layer.mlp.gate_proj.weight)
+        self.init_with_data("base_layer.mlp.down_proj", load_tensor(path, f"model.layers.{config.num_hidden_layers-1}.mlp.down_proj.weight"), base_layer.mlp.down_proj.weight)
+        self.init_with_data("base_layer.mlp.up_proj", load_tensor(path, f"model.layers.{config.num_hidden_layers-1}.mlp.up_proj.weight"), base_layer.mlp.up_proj.weight)
+        self.init_with_data("base_layer.input_layernorm", load_tensor(path, f"model.layers.{config.num_hidden_layers-1}.input_layernorm.weight"), base_layer.input_layernorm.weight)
+        self.init_with_data("base_layer.post_attention_layernorm", load_tensor(path, f"model.layers.{config.num_hidden_layers-1}.post_attention_layernorm.weight"), base_layer.post_attention_layernorm.weight)
         
         base_norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.init_with_data("base_norm", load_tensor(path, f"model.norm.weight"), base_norm.weight)
@@ -640,7 +639,7 @@ class Clover2Model(nn.Module):
         )
         
         
-        self._init_medusa_head(base_layer, base_norm)#base_model.layers[-1], base_model.norm
+        self._init_clover_head(base_layer, base_norm)#base_model.layers[-1], base_model.norm
         
         # del base_model
         del base_layer
@@ -710,8 +709,8 @@ class Clover2Model(nn.Module):
 
         return combined_attention_mask
 
-    def _init_medusa_head(self, base_layer, base_norm):
-        """Initialize the weights of each medusa_head using the base model's weights"""
+    def _init_clover_head(self, base_layer, base_norm):
+        """Initialize the weights of each clover_head using the base model's weights"""
 
         def init_clover_layer(layer_idx, base_layer, clover_layer):
             self.init_one_param(
@@ -970,19 +969,19 @@ class Clover2Model(nn.Module):
             std=std,
         )
         if use_cache:
-            medusa_hidden_states, token_emb, next_decoder_cache = all_ret
+            clover_hidden_states, token_emb, next_decoder_cache = all_ret
         else:
-            medusa_hidden_states, token_emb = all_ret
+            clover_hidden_states, token_emb = all_ret
         
-        def get_all_head(medusa_hidden_states, token_emb):
+        def get_all_head(clover_hidden_states, token_emb):
             hidden_states_seq = []
             
-            for i in range(0, self.config_medusa.num_heads):
-                medusa_hidden_states = medusa_hidden_states[
+            for i in range(0, self.config_clover.num_heads):
+                clover_hidden_states = clover_hidden_states[
                     :, : token_emb.size(1) - i
                 ].contiguous()
-                lm_head_h, medusa_hidden_states = self.forward_rnn(
-                    medusa_hidden_states, None, i, token_emb=token_emb[:, i:]
+                lm_head_h, clover_hidden_states = self.forward_rnn(
+                    clover_hidden_states, None, i, token_emb=token_emb[:, i:]
                 )
                 lm_head_h_pad = torch.zeros_like(token_emb)
                 lm_head_h_pad[:, : token_emb.size(1) - i] = lm_head_h
@@ -994,10 +993,10 @@ class Clover2Model(nn.Module):
         if self.gradient_checkpointing and self.training:
             hidden_states_seq = torch.utils.checkpoint.checkpoint(
                 get_all_head,
-                medusa_hidden_states, token_emb
+                clover_hidden_states, token_emb
             )
         else:
-            hidden_states_seq = get_all_head(medusa_hidden_states, token_emb)
+            hidden_states_seq = get_all_head(clover_hidden_states, token_emb)
         
         return hidden_states_seq
     
@@ -1072,18 +1071,18 @@ class Clover2Model(nn.Module):
                                     position_ids, past_key_value, output_attentions)
                     return custom_forward
 
-                medusa_hidden_states = torch.utils.checkpoint.checkpoint(
+                clover_hidden_states = torch.utils.checkpoint.checkpoint(
                     create_custom_forward(cur_layer),
                     hidden_states,
                 )
                 if output_hidden_states:
-                    all_hidden_states += (medusa_hidden_states,)
+                    all_hidden_states += (clover_hidden_states,)
                 if use_cache:
-                    next_decoder_cache += (medusa_hidden_states[2 if output_attentions else 1],)
+                    next_decoder_cache += (clover_hidden_states[2 if output_attentions else 1],)
                 
-                # print_tensor(f"forward_clover_h layer medusa_hidden_states", medusa_hidden_states[0])
+                # print_tensor(f"forward_clover_h layer clover_hidden_states", clover_hidden_states[0])
             else:
-                medusa_hidden_states = cur_layer(
+                clover_hidden_states = cur_layer(
                     hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
@@ -1092,10 +1091,10 @@ class Clover2Model(nn.Module):
                     use_cache=use_cache,
                 )
                 if output_hidden_states:
-                    all_hidden_states += (medusa_hidden_states,)
+                    all_hidden_states += (clover_hidden_states,)
                 if use_cache:
-                    next_decoder_cache += (medusa_hidden_states[2 if output_attentions else 1],)
-            hidden_states = medusa_hidden_states[0]
+                    next_decoder_cache += (clover_hidden_states[2 if output_attentions else 1],)
+            hidden_states = clover_hidden_states[0]
         hidden_states = self.clover_norm(hidden_states)
         if use_cache:
             return hidden_states, token_emb, next_decoder_cache
@@ -1271,7 +1270,7 @@ class Clover2Model(nn.Module):
             mc_sim_t = []
             flage_qiut = 0
             
-            for i in range(self.config_medusa.num_heads - 1):
+            for i in range(self.config_clover.num_heads - 1):
                 # sample update ss_token, ss_prob, ss_op
                 if logits_processor is not None:
                     topk_index,topk_prob,op=self.sample(last_headout,logits_processor,k=token_count,)
@@ -1363,7 +1362,7 @@ class Clover2Model(nn.Module):
                 position_ids_list.append([])
                 sort_prob.append([])
                 mc_sim_t.append([])
-                i = self.config_medusa.num_heads - 1
+                i = self.config_clover.num_heads - 1
                 for seq_len in range(len(topk_index)):
                     # prob_min = topk_prob[seq_len][0] * token_score_threldhold
                     sum_prob = 0

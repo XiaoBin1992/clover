@@ -144,14 +144,3 @@ class EConfig(PretrainedConfig):
         if rope_scaling_factor is None or not isinstance(rope_scaling_factor, float) or rope_scaling_factor <= 1.0:
             raise ValueError(f"`rope_scaling`'s factor field must be an float > 1, got {rope_scaling_factor}")
 
-
-
-config_medusa_gobal = {
-    "num_heads": 5,
-    "num_layers": 2,
-    "heads_coefficient": 1.0,
-    "decay_coefficient": 0.7,
-    "only_heads": True,
-    "logging": True,
-    "enable_clover": True
-}
