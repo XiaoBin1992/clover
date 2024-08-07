@@ -561,7 +561,7 @@ class Clover2Model(nn.Module):
                  bias=True):
         super().__init__()
         if config_clover == None:
-            self.config_clover = ConfigClover(config["clover"])
+            self.config_clover = ConfigClover(config.clover)
         else:
             self.config_clover = config_clover
         self.gradient_checkpointing = True
