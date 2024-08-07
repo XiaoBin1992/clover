@@ -14,8 +14,8 @@ from transformers import AutoTokenizer
 import os
 from huggingface_hub import hf_hub_download
 from .cnets import Model
-from .clover2 import Clover2Model, ConfigMedusa
-from .configs import EConfig, config_medusa_gobal
+from .clover2 import Clover2Model, ConfigClover
+from .configs import EConfig
 from huggingface_hub import hf_hub_download
 
 from safetensors.torch import load_file
@@ -45,7 +45,7 @@ class CloModel(nn.Module):
         except:
             bias=True
         
-        self.ea_layer = Clover2Model(config, ConfigMedusa(config_medusa_gobal), base_model.lm_head, load_emb=True, path = base_model_name_or_path)
+        self.ea_layer = Clover2Model(config, base_model.lm_head, load_emb=True, path = base_model_name_or_path)
 
         low_memory=False
         
@@ -89,9 +89,9 @@ class CloModel(nn.Module):
                 base_model_path, **kwargs
             )
 
-        configpath=os.path.join(base_model_path, "config.json") #ea_model_path
+        configpath=os.path.join(ea_model_path, "config.json")
         if not os.path.exists(configpath):
-            configpath = hf_hub_download(base_model_path, "config.json") #ea_model_path
+            configpath = hf_hub_download(ea_model_path, "config.json")
         model = cls(
             base_model,
             base_model_path,

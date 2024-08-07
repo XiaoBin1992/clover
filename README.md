@@ -80,16 +80,55 @@ Execute command 'clover.ge_data.allocation' to obtain the final formatted data, 
 clover/stripts* provides examples of .sh files.
 
 Get indicator data:
+```bash
 clover/clover/evaluation/speed_spe.py --path .jsonl
 clover/clover/evaluation/tau_spe.py --path .jsonl
-
-### Reference
-
-For technical details and full experimental results, please check [the paper of Clover](https://arxiv.org/abs/2405.00263) and [the paper of Clover-2](https://arxiv.org/abs/2408.00264).
+```
 
 <!-- ```
 
 ``` -->
+
+
+### Possible improvement points
+1. The Attention Decoder before the Augmenting Block is not the most effective solution. When we directly replace this module with FC, we find that some tasks improve while others decline.
+2. We are using the transpose of lm_head for token embedding, which incurs additional storage costs. It can be replaced with the token emb of llm, which should only have a minimal negative impact.
+
+
+### QA
+1. Why is there no comparison with eagle2?
+
+    a. Eagle2 only upgrades the sample strategy, and one of the significant variables is the increase of the token count from around 24 to about 64. The sample strategy is relatively independent of the model structure. Clover2 mainly upgrades the model structure, and this part only needs to be compared with eagle1, ensuring that all other strategies remain the same except for the model structure.
+
+    b. Because when we started designing clover2, eagle2 had not yet been released, and migrating to eagle2 would require additional costs. We had a deadline within which we had no time to migrate.
+
+
+
+### clover-v1 sample strategy
+The complete training and inference code transformation of clover2 originates from eagle1, including the sample strategy. In fact, clover1 also involves its own sample strategy. Since clover1 considers large batch scenarios, it can only have 4 candidate tokens, making the dynamic sample strategy crucial. Below is the sample strategy of clover1, which is similar to eagle2, but it truncates according to top-p.
+
+<div align="center">
+  <picture>
+  <img src="./figs/clover1-sample.png" width="80%">
+  </picture>
+  <br>
+  <div align="center" width="80%">
+  <em> clover-1 sample strategy. </em>
+  </div>
+  <br>
+</div>
+
+The main idea:
+1. At the token level, tokens are discarded based on the top-p probability. To avoid situations where long-tail probabilities, such as 0.6, 0.1, 0.1, 0.1, occupy too many tokens, tokens with probabilities less than one-quarter of the top 1 probability are discarded.
+
+2. At the tree level, the top n are selected based on the joint probability ranking.
+
+3. At the head level, the number of candidate tokens available after each head is completed is reduced by the number of tokens already selected.
+
+
+### Reference
+
+For technical details and full experimental results, please check [the paper of Clover](https://arxiv.org/abs/2405.00263) and [the paper of Clover-2](https://arxiv.org/abs/2408.00264).
 
 ### Acknowledgements
 

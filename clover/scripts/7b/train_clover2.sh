@@ -1,6 +1,6 @@
 
 export WANDB_API_KEY="" # set wandb key
-#export CUDA_VISIBLE_DEVICES=0,1,2,3
+export CUDA_VISIBLE_DEVICES=0,1,2,3
 # ps -ef|grep -E "eagle|tail|wandb"|awk -F " " '{print $2}'| xargs kill -9
 #bash clover/scripts/7b/train_clover2.sh  > info.log 2>&1 &
 
@@ -11,4 +11,4 @@ accelerate launch -m --mixed_precision=bf16 --main_process_port 29613 clover.tra
     --cpdir clover/model_gen/7B-h5-vloss10-layer2-lr-mlp \
     --configpath clover/train/vicuna_7B_config.json \
     --gradient_checkpointing True \
-    --bs 2
+    --bs 4
